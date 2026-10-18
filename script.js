@@ -1428,19 +1428,18 @@ function initializeCleanMapWelcome() {
         welcome.hidden = true;
         app.hidden = false;
 
-        // Let the browser display the app before resizing Leaflet.
-        requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-                if (cleanMapInstance) {
-                    cleanMapInstance.invalidateSize({
-                        animate: false,
-                        pan: false
-                    });
-                }
-
-                refreshCleanMapSize();
+requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+        if (cleanMapInstance) {
+            cleanMapInstance.invalidateSize({
+                animate: false,
+                pan: false
             });
-        });
+        }
+    });
+});
+};
+
     };
 
     
