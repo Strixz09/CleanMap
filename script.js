@@ -1439,9 +1439,6 @@ requestAnimationFrame(() => {
     });
 });
 };
-
-    };
-
     
 const welcomeSeen = localStorage.getItem('cleanmapWelcomeSeen');
 
