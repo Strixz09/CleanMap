@@ -122,7 +122,29 @@ const settle = page => page.evaluate(() => new Promise(resolve => requestAnimati
                 await page.unroute(pattern);
             }
         }
-        console.log('PASS controlled search failure messages and raw warning diagnostics');
+        // Editing an input without submitting another search must also stale its error.
+        for (const failure of ['network', 'json', 'http']) {
+            const pattern = '**/geocoding/**';
+            let intercept;
+            const intercepted = new Promise(resolve => { intercept = resolve; });
+            await page.route(pattern, route => { intercept(route); });
+            try {
+                await page.locator('#searchInput').fill(`Regression stale failure ${failure}`);
+                await page.locator('#searchButton').click();
+                const route = await intercepted;
+                const requestId = await page.evaluate(() => mapSearchRequest);
+                await page.locator('#searchInput').fill(failure === 'http' ? '' : 'An edited query');
+                const warningPromise = page.waitForEvent('console', { predicate: message => message.type() === 'warning' && message.text().startsWith('CleanMap location search failed:') });
+                if (failure === 'network') await route.abort('failed');
+                else await route.fulfill({ status: failure === 'http' ? 503 : 200, contentType: 'application/json', body: 'not JSON' });
+                await warningPromise;
+                assert.equal(await page.evaluate(() => mapSearchRequest), requestId, 'Editing did not submit another search');
+                assert.equal(await page.locator('#toast').innerText(), 'Searching for that place…', 'Stale failure does not replace the status for an edited or cleared query');
+            } finally {
+                await page.unroute(pattern);
+            }
+        }
+        console.log('PASS controlled active-search failures, raw diagnostics, and suppressed stale errors for edited/cleared queries');
         await page.locator('#locationButton').click();
         await page.waitForFunction(() => window.userLocationMarker?.getLatLng().lat === 10.3157);
         console.log('PASS live search, preserved view after tab/resize, zoom, simulated map GPS');

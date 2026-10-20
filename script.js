@@ -301,7 +301,9 @@ async function searchLocation() {
             showToast(place.place_name || place.text || 'Location found.');
         } catch (error) {
             console.warn('CleanMap location search failed:', error);
-            if (requestId === mapSearchRequest) showToast('Location search is unavailable. Please try again.');
+            if (requestId === mapSearchRequest && input.value.trim().toLowerCase() === query) {
+                showToast('Location search is unavailable. Please try again.');
+            }
         }
         return;
     }
@@ -838,7 +840,7 @@ function buildVotePanel(report) {
                     placeholder="For example, explain what in the photo/video supports your assessment..."
                 ></textarea>
 
-                <button type="submit" class="view-report-button">
+                <button type="submit" class="view-report-button" id="submitCommunityNote-${escapeHTML(report.id)}">
                     Submit feedback
                 </button>
             </form>
@@ -856,9 +858,16 @@ function attachVoteHandlers(container) {
         const input = form.elements.namedItem('communityNote');
         const button = form.querySelector('button[type="submit"]');
         if (button.disabled) return;
+        const hadFocus = document.activeElement === button;
         button.disabled = true;
         try { await submitCommunityNote(form.dataset.noteReport, input?.value); }
-        finally { button.disabled = false; }
+        finally {
+            button.disabled = false;
+            // Disabling the submit button blurs it; the refresh may replace it too.
+            if (hadFocus && document.activeElement === document.body && $('reportDetailsDialog')?.open) {
+                $(button.id)?.focus({ preventScroll: true });
+            }
+        }
     }));
 }
 

@@ -103,8 +103,12 @@ const settle = page => page.evaluate(() => new Promise(resolve => requestAnimati
         assert.deepEqual(thresholds, [false, true, false, true], 'Existing 3 vote / 60% thresholds remain');
         await page.locator('.community-feedback summary').click();
         await page.locator('[name="communityNote"]').fill('Local-only feedback for this dialog regression.');
+        const submitId = await page.locator('[data-note-form] button').getAttribute('id');
+        assert.equal(submitId, 'submitCommunityNote-dialog-fixture', 'Feedback submit has a stable report-specific ID');
         await page.locator('[data-note-form] button').click();
         await page.waitForFunction(() => document.querySelectorAll('.community-notes-list blockquote').length === 1);
+        assert.equal(await page.evaluate(() => document.activeElement.id), submitId, 'Submitting feedback restores focus to its replacement button');
+        assert(await dialog.evaluate(el => el.contains(document.activeElement)));
         await page.locator('#reportDetailsScroll').evaluate(el => el.scrollTop = 200);
         const beforeRefresh = await page.locator('#reportDetailsScroll').evaluate(el => el.scrollTop);
         await page.evaluate(() => selectLocation(reports[0].id));
