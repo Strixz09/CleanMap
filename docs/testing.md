@@ -15,3 +15,7 @@ It then tests the existing offline report path with a synthetic local observatio
 Optional: `CLEANMAP_TEST_URL=https://cleanmaps.vercel.app/ CLEANMAP_TEST_CANDIDATE=1` runs the same candidate under the deployed origin, overriding only the repository's HTML/CSS/JS/image responses in that isolated browser context. This verifies origin-sensitive map/search behavior, **not** deployment of the new files. Without those overrides, the remote site must already serve the candidate version.
 
 For visual verification and accessibility, use the registered shared preview with `coderabbit-agent-browser screenshot` and `coderabbit-agent-browser a11y --tags wcag2a,wcag2aa --json`.
+
+## Report-details dashboard
+
+With the same CDP/module environment, run `node tests/report-details.cjs` for focused dialog coverage. It checks marker/profile-card entry, desktop/phone/tablet/landscape layout, visible voting, fixed header and internal scrolling, Escape and map preservation, keyboard focus, duplicate/replacement votes and threshold boundaries, feedback, photo and playable synthetic video, media cleanup, deletion confirmations, and owner/member/admin action visibility. Feedback's Supabase payload and sign-in/failure behavior are checked with an in-browser stub; this does not certify live RLS permissions. All test reports/media are confined to a temporary browser context. The same optional Vercel-origin resource overrides are supported.

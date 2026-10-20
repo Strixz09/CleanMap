@@ -77,7 +77,6 @@
           <div class="map-attribution">© OpenStreetMap contributors</div>
         </div>
         <div class="map-legend panel"><div class="panel-title"><strong>Pollution Legend</strong><button class="text-icon" id="toggleLegend" aria-label="Toggle legend">×</button></div><div id="legendContent" class="legend-content"><div class="legend-row"><span class="legend-symbol low-bg">●</span><span><b>Low Pollution</b><small>Minor / localized</small></span></div><div class="legend-row"><span class="legend-symbol moderate-bg">●</span><span><b>Moderate Pollution</b><small>Needs attention</small></span></div><div class="legend-row"><span class="legend-symbol high-bg">●</span><span><b>High Pollution</b><small>Significant impact</small></span></div><div class="legend-row"><span class="legend-symbol severe-bg">●</span><span><b>Severe Pollution</b><small>Potentially urgent</small></span></div><div class="legend-types"><b>Types of Pollution</b><span>〰 Air Pollution</span><span>▤ Water Pollution</span><span>♻ Solid Waste Pollution</span><span>♬ Noise Pollution</span></div></div></div>
-        <div class="panel location-details" id="detailsCard"><div class="empty-details"><span class="pin-icon">⌖</span><div><strong>Select a marker</strong><p>Tap a colored marker on the map to view details for that area.</p></div></div></div>
         <section class="impact-section" data-impact-guide aria-labelledby="mapImpactTitle" data-heading-id="mapImpactTitle"></section>
       </section>
 
@@ -148,6 +147,7 @@
       <p id="pickerCoordinates" class="picker-coordinates">Move the map or tap a location.</p>
       <div class="location-picker-actions"><button type="button" id="pickerUseGps" class="location-autofill-button">◎ Use GPS</button><button type="button" id="confirmPickedLocation" class="primary-button">Confirm location</button></div>
     </dialog>
+    <dialog id="reportDetailsDialog" class="report-details-dialog" aria-labelledby="reportDetailsTitle"><div id="detailsCard"></div></dialog>
     <dialog id="deleteReportDialog" class="info-dialog delete-report-dialog" aria-labelledby="deleteReportTitle"><button type="button" class="dialog-close" id="deleteReportClose" aria-label="Close delete confirmation">×</button><h2 id="deleteReportTitle">Delete this report?</h2><p id="deleteReportText">This will permanently remove the report from this browser, including its map marker, saved photo, and attached video. This action cannot be undone.</p><div class="delete-dialog-actions"><button type="button" id="cancelDeleteReport" class="secondary-dialog-button">Cancel</button><button type="button" id="confirmDeleteReport" class="danger-button">Delete report</button></div></dialog>
     <dialog id="accountDialog" class="info-dialog account-dialog" aria-labelledby="accountDialogTitle">
       <button type="button" class="dialog-close" id="accountDialogClose" aria-label="Close account dialog">×</button>

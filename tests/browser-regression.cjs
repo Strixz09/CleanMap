@@ -196,6 +196,7 @@ const settle = page => page.evaluate(() => new Promise(resolve => requestAnimati
         assert.equal(await page.evaluate(() => reports[0].myVote), 'low');
         await page.locator('[data-vote-severity="high"]').click();
         assert.deepEqual(await page.evaluate(() => [reports[0].votes.low, reports[0].votes.high]), [0, 1]);
+        await page.locator('#closeDetails').click();
         await page.locator('[data-page="statistics"]').click();
         assert.equal(await page.locator('#totalReports').innerText(), '1');
         assert.equal(await page.locator('#chartHigh').innerText(), '1');
@@ -210,6 +211,7 @@ const settle = page => page.evaluate(() => new Promise(resolve => requestAnimati
         assert.equal(await page.evaluate(() => favorites.length), 1);
         await page.locator('#favoriteButton').click();
         assert.equal(await page.evaluate(() => favorites.length), 0);
+        await page.locator('#closeDetails').click();
         await page.evaluate(() => switchPage('admin'));
         assert(await page.locator('#page-map').isVisible());
         assert(!(await page.locator('#adminNavButton').isVisible()));

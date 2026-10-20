@@ -14,6 +14,7 @@ let cleanMapAccountMode = 'signin';
 let cleanMapAuthBusy = false;
 
 let selectedLocation = null;
+let reportDetailsReturnFocus = null;
 let cleanMapInstance = null;
 // Main Cebu Island coastline (not Cebu province): OpenStreetMap relation 3604190.
 // Verified from Nominatim's polygon bounds on 2026-10-20; see docs/map-overview.md.
@@ -70,6 +71,8 @@ function saveStore() {
 function showToast(message) {
     if (!toast) return;
 
+    const detailsStatus = $('reportDetailsDialog')?.open && $('reportDetailsStatus');
+    if (detailsStatus) detailsStatus.textContent = message;
     toast.textContent = message;
     toast.classList.add('show');
 
@@ -90,6 +93,14 @@ function renderMarkers() {
 function canDeleteReport(report) { return !report?.cloudReport || (Boolean(currentUser) && (report.reporterId === currentUser.id || currentRole === 'admin')); }
 
 function selectLocation(id) {
+    const dialog = $('reportDetailsDialog');
+    const refreshing = dialog?.open && String(selectedLocation?.id) === String(id);
+    const focused = refreshing ? document.activeElement : null;
+    const focusId = focused?.id;
+    const focusVote = focused?.dataset.voteSeverity;
+    const scrollTop = refreshing ? $('detailsCard')?.querySelector('.report-details-scroll')?.scrollTop || 0 : 0;
+    const feedbackOpen = refreshing && $('detailsCard')?.querySelector('.community-feedback')?.open;
+    const noteDraft = refreshing ? $('detailsCard')?.querySelector('[name="communityNote"]')?.value : '';
     const sampleLocation = locations.find(item => item.id === id);
     const submittedReport = reports.find(item => item.id === id);
     selectedLocation = sampleLocation || (submittedReport ? {
@@ -106,7 +117,7 @@ function selectLocation(id) {
     const coords = selectedLocation.isSubmittedReport && Number.isFinite(selectedLocation.lat) && Number.isFinite(selectedLocation.lng)
         ? [selectedLocation.lat, selectedLocation.lng]
         : mapCoordinates[id];
-    if (cleanMapInstance && coords) cleanMapInstance.panTo(coords);
+    if (!refreshing && cleanMapInstance && coords) cleanMapInstance.panTo(coords);
 
     document.querySelectorAll('.map-marker').forEach(marker => {
         marker.classList.toggle(
@@ -121,44 +132,51 @@ function selectLocation(id) {
 
     if (!detailsCard) return;
 
+    releaseDetailsMedia();
     detailsCard.innerHTML = `
-        <div class="detail-head">
-            <span class="detail-level level-${l.severity}">
-                ${escapeHTML(l.level)} pollution
-            </span>
-            <button class="text-icon" id="closeDetails"
-                aria-label="Close details">×</button>
-        </div>
-        <h2 class="detail-location">${escapeHTML(l.name)}</h2>
-        <p class="detail-updated">Updated ${escapeHTML(l.updated)}</p>
-        <div class="detail-info">
-            <div>
-                <span>Pollution type</span>
-                <strong>${escapeHTML(l.type)}</strong>
+        <header class="report-details-header">
+            <div class="report-details-heading">
+                <p class="report-details-eyebrow">Report details <span aria-hidden="true">/</span> ${escapeHTML(l.type || 'Pollution report')}</p>
+                <h2 class="detail-location" id="reportDetailsTitle" title="${escapeHTML(l.name)}">${escapeHTML(l.name)}</h2>
+                <div class="report-details-badges">
+                    <span class="detail-level level-${safeSeverity(l.severity)}">${escapeHTML(l.level)} severity</span>
+                    ${l.isSubmittedReport ? `<span class="report-status">${escapeHTML(l.verificationStatus || 'Pending verification')}</span>` : ''}
+                </div>
+                <p class="report-details-status" id="reportDetailsStatus" role="status" aria-live="polite"></p>
             </div>
-            <div>
-                <span>Pollution level</span>
-                <strong>${escapeHTML(l.level)} · ${escapeHTML(CLEANMAP_GUIDES.severities[safeSeverity(l.severity)].summary)}</strong>
+            <button type="button" class="report-details-close" id="closeDetails" aria-label="Close report details" autofocus>×</button>
+        </header>
+        <div class="report-details-scroll" id="reportDetailsScroll" tabindex="0" role="region" aria-label="Report information and community actions">
+            <div class="report-details-layout">
+                <aside class="report-details-community" aria-label="Community and report actions">
+                    ${l.isSubmittedReport ? buildVotePanel(l) : ''}
+                    ${l.isSubmittedReport ? `<section class="report-verification"><h3>Admin verification</h3><p>${escapeHTML(l.verificationStatus || 'Pending verification')}</p><small>Admin verification is separate from community severity voting.</small></section>` : ''}
+                    <section class="report-actions-section" aria-labelledby="reportActionsTitle">
+                        <h3 id="reportActionsTitle">Report actions</h3>
+                        <div class="detail-actions">
+                            ${l.isSubmittedReport ? `${canDeleteReport(l) ? '<button class="danger-button detail-delete-button" id="deleteSelectedReport" type="button">Delete report</button>' : ''}` : '<button type="button" class="save-btn" id="favoriteButton">' + (saved ? '★ Remove favorite' : '♡ Save location') + '</button>'}
+                            <button type="button" id="closeDetailsAction">Back to map</button>
+                        </div>
+                    </section>
+                </aside>
+                <section class="report-details-information" aria-labelledby="reportInformationTitle">
+                    ${l.photo || l.videoUrl || l.videoKey ? `<div class="report-details-media">
+                        ${l.photo ? `<div class="submitted-report-photo"><img src="${escapeHTML(l.photo)}" alt="Photo attached to this pollution report"></div>` : ''}
+                        ${l.videoUrl ? `<div class="submitted-report-video"><video controls playsinline preload="metadata" src="${escapeHTML(l.videoUrl)}" aria-label="Video attached to this pollution report"></video></div>` : l.videoKey ? `<div class="submitted-report-video" data-video-key="${escapeHTML(l.videoKey)}"><p class="field-hint">Loading submitted video…</p></div>` : ''}
+                    </div>` : ''}
+                    <section class="report-information-section">
+                        <h3 id="reportInformationTitle">Report information</h3>
+                        <p class="report-description">${escapeHTML(l.description || 'No description provided.')}</p>
+                        <dl class="report-metadata">
+                            <div><dt>Location</dt><dd>${escapeHTML(l.name)}</dd></div>
+                            ${coords ? `<div><dt>Coordinates</dt><dd>${coords.map(value => Number(value).toFixed(5)).join(', ')}</dd></div>` : ''}
+                            <div><dt>${l.isSubmittedReport ? 'Date reported' : 'Last updated'}</dt><dd>${escapeHTML(l.updated || 'Date not recorded')}</dd></div>
+                            ${l.reporterId && currentUser?.id === l.reporterId ? '<div><dt>Reported by</dt><dd>You</dd></div>' : ''}
+                            <div><dt>Severity</dt><dd>${escapeHTML(l.level)} · ${escapeHTML(CLEANMAP_GUIDES.severities[safeSeverity(l.severity)].summary)}</dd></div>
+                        </dl>
+                    </section>
+                </section>
             </div>
-            <div>
-                <span>Details</span>
-                <strong>${escapeHTML(l.description)}</strong>
-            </div>
-        </div>
-        ${l.photo ? `<div class="submitted-report-photo"><img src="${l.photo}" alt="Photo attached to this pollution report"></div>` : ''}
-        ${l.videoUrl ? `<div class="submitted-report-video"><video controls preload="metadata" src="${escapeHTML(l.videoUrl)}"></video></div>` : l.videoKey ? `<div class="submitted-report-video" data-video-key="${escapeHTML(l.videoKey)}"><p class="field-hint">Loading submitted video…</p></div>` : ''}
-        ${l.isSubmittedReport ? `
-    <div class="detail-info admin-verification-info">
-        <div>
-            <span>Admin verification</span>
-            <strong>${escapeHTML(l.verificationStatus || 'Pending verification')}</strong>
-        </div>
-    </div>
-    ${buildVotePanel(l)}
-` : ''}
-        <div class="detail-actions">
-            <button id="closeDetailsAction">Close details</button>
-            ${l.isSubmittedReport ? `<span class="submitted-report-tag">Community report</span>${canDeleteReport(l) ? '<button class="danger-button detail-delete-button" id="deleteSelectedReport" type="button">Delete report</button>' : ''}` : `<button class="save-btn" id="favoriteButton">${saved ? '★ Remove favorite' : '♡ Save location'}</button>`}
         </div>
     `;
 
@@ -168,27 +186,61 @@ function selectLocation(id) {
     $('closeDetailsAction').addEventListener('click', clearDetails);
     if ($('favoriteButton')) $('favoriteButton').addEventListener('click', toggleFavorite);
     if ($('deleteSelectedReport')) $('deleteSelectedReport').addEventListener('click', () => requestDeleteReport(l.id));
+    if (dialog && !dialog.open) {
+        reportDetailsReturnFocus = document.activeElement;
+        dialog.showModal();
+    }
+    if (refreshing) {
+        const feedback = detailsCard.querySelector('.community-feedback');
+        if (feedback) feedback.open = Boolean(feedbackOpen);
+        const noteInput = detailsCard.querySelector('[name="communityNote"]');
+        if (noteInput) noteInput.value = noteDraft || '';
+        detailsCard.querySelector('.report-details-scroll').scrollTop = scrollTop;
+        const nextFocus = focusId ? $(focusId) : [...detailsCard.querySelectorAll('[data-vote-severity]')].find(button => button.dataset.voteSeverity === focusVote);
+        nextFocus?.focus({ preventScroll: true });
+    }
+}
+
+function releaseDetailsMedia() {
+    $('detailsCard')?.querySelectorAll('video').forEach(video => {
+        video.pause();
+        if (video.dataset.localObjectUrl) URL.revokeObjectURL(video.dataset.localObjectUrl);
+    });
 }
 
 function clearDetails() {
+    const dialog = $('reportDetailsDialog');
+    if (dialog?.open) dialog.close();
     selectedLocation = null;
-
-    document.querySelectorAll('.map-marker').forEach(marker => {
-        marker.classList.remove('selected');
-    });
-
-    if ($('detailsCard')) {
-        $('detailsCard').innerHTML = `
-            <div class="empty-details">
-                <span class="pin-icon">⌖</span>
-                <div>
-                    <strong>Select a marker</strong>
-                    <p>Tap a colored marker on the map to view details for that area.</p>
-                </div>
-            </div>
-        `;
-    }
+    document.querySelectorAll('.map-marker').forEach(marker => marker.classList.remove('selected'));
+    releaseDetailsMedia();
+    $('detailsCard')?.replaceChildren();
 }
+
+$('reportDetailsDialog')?.addEventListener('keydown', event => {
+    if (event.key !== 'Tab' || document.querySelector('#deleteReportDialog[open]')) return;
+    const dialog = event.currentTarget;
+    const controls = [...dialog.querySelectorAll('button, input, textarea, select, summary, video[controls], [tabindex]')]
+        .filter(element => !element.disabled && element.tabIndex >= 0 && element.getClientRects().length);
+    const first = controls[0], last = controls[controls.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault(); last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault(); first?.focus();
+    }
+});
+
+$('reportDetailsDialog')?.addEventListener('close', () => {
+    // Escape closes the native dialog; keep selection and media state in sync.
+    if ($('reportDetailsDialog').open) return;
+    if (selectedLocation) clearDetails();
+    if (!document.querySelector('dialog[open]')) {
+        const opener = reportDetailsReturnFocus?.isConnected && reportDetailsReturnFocus.getClientRects().length
+            ? reportDetailsReturnFocus : $('realMap');
+        opener?.focus({ preventScroll: true });
+    }
+    reportDetailsReturnFocus = null;
+});
 
 function toggleFavorite() {
     if (!selectedLocation) return;
@@ -616,6 +668,7 @@ async function hydrateVideo(container) {
         video.playsInline = true;
         video.preload = 'metadata';
         video.src = url;
+        video.dataset.localObjectUrl = url;
         video.setAttribute('aria-label', 'Community-submitted noise pollution video');
         container.replaceChildren(video);
     } catch (error) {
@@ -734,7 +787,7 @@ function buildVotePanel(report) {
     return `
         <section class="community-vote-panel">
             <div class="vote-panel-heading">
-                <strong>Community severity vote</strong>
+                <h3>Community voting</h3>
                 <span class="pill ${result.verified ? 'moderate-pill' : 'low-pill'}">
                     ${communityStatus}
                 </span>
@@ -745,11 +798,9 @@ function buildVotePanel(report) {
                 ${communityDetail}
             </p>
 
-            <div class="vote-stats">${bars}</div>
-
-            <label class="field-label">
+            <p class="field-label">
                 What severity do you think this evidence shows?
-            </label>
+            </p>
 
             <div class="vote-buttons">
                 ${VOTE_LEVELS.map(level => `
@@ -767,6 +818,10 @@ function buildVotePanel(report) {
                 Sign in to submit a community vote. One vote per account per report.
             </small>
 
+            <div class="vote-stats" role="group" aria-label="Community vote counts and percentages">${bars}</div>
+
+            <details class="community-feedback">
+                <summary>Community feedback · ${notes.length} note${notes.length === 1 ? '' : 's'}</summary>
             <form class="community-note-form"
                 data-note-form
                 data-note-report="${escapeHTML(report.id)}">
@@ -789,17 +844,51 @@ function buildVotePanel(report) {
             </form>
 
             ${notesMarkup}
+            </details>
         </section>
     `;
 }
 function attachVoteHandlers(container) {
     if (!container) return;
     container.querySelectorAll('[data-vote-severity]').forEach(button => button.addEventListener('click', () => voteOnReport(button.dataset.voteReport, button.dataset.voteSeverity)));
-    container.querySelectorAll('[data-note-form]').forEach(form => form.addEventListener('submit', event => {
+    container.querySelectorAll('[data-note-form]').forEach(form => form.addEventListener('submit', async event => {
         event.preventDefault();
         const input = form.elements.namedItem('communityNote');
-        submitCommunityNote(form.dataset.noteReport, input?.value);
+        const button = form.querySelector('button[type="submit"]');
+        if (button.disabled) return;
+        button.disabled = true;
+        try { await submitCommunityNote(form.dataset.noteReport, input?.value); }
+        finally { button.disabled = false; }
     }));
+}
+
+async function submitCommunityNote(reportId, value) {
+    const report = reports.find(item => String(item.id) === String(reportId));
+    const text = String(value || '').trim();
+    if (!report) return;
+    if (!text || text.length > 280) { showToast('Write a note of 1–280 characters before submitting.'); return; }
+    if (supabaseClient && !currentUser) { showToast('Sign in to submit community feedback.'); return; }
+    try {
+        if (supabaseClient && report.cloudReport !== false) {
+            const { error } = await supabaseClient.from('feedback').insert({
+                report_id: report.dbId ?? report.id, user_id: currentUser.id, message: text
+            });
+            if (error) throw error;
+            await loadCloudReports();
+        } else {
+            report.notes = [...(report.notes || []), { text, date: new Date().toLocaleString() }];
+            saveStore();
+        }
+        if (selectedLocation && String(selectedLocation.id) === String(report.id)) {
+            const input = $('detailsCard')?.querySelector('[name="communityNote"]');
+            if (input) input.value = '';
+            selectLocation(report.id);
+        }
+        showToast('Your community feedback was saved.');
+    } catch (error) {
+        console.warn('CleanMap community feedback failed:', error);
+        showToast('Could not save your feedback. Please try again.');
+    }
 }
 
 // Compress the photo before saving it in localStorage.
