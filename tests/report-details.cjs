@@ -13,7 +13,9 @@ const settle = page => page.evaluate(() => new Promise(resolve => requestAnimati
     const browser = await chromium.connectOverCDP(process.env.CLEANMAP_BROWSER_CDP);
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
     await context.route('**/*.supabase.co/**', route => route.abort());
-    await context.addInitScript(() => localStorage.setItem('cleanmapWelcomeSeen', 'true'));
+    await context.addInitScript(() => {
+        if (location.origin !== 'null') localStorage.setItem('cleanmapWelcomeSeen', 'true');
+    });
     if (process.env.CLEANMAP_TEST_CANDIDATE === '1') {
         await context.route(`${new URL(baseURL).origin}/**`, async route => {
             const url = new URL(route.request().url());
