@@ -15,6 +15,14 @@ let cleanMapAuthBusy = false;
 
 let selectedLocation = null;
 let cleanMapInstance = null;
+// Main Cebu Island coastline (not Cebu province): OpenStreetMap relation 3604190.
+// Verified from Nominatim's polygon bounds on 2026-10-20; see docs/map-overview.md.
+const CEBU_ISLAND_BOUNDS = [[9.4128637, 123.2963877], [11.2857272, 124.0702215]];
+let cleanMapOverviewPending = true;
+let cleanMapOverviewActive = true;
+let cleanMapLayoutUpdating = false;
+let cleanMapLayoutFrame = null;
+let cleanMapLastSize = null;
 let leafletMarkers = {};
 let reportMarkers = {};
 let reportLocationCoords = null;
@@ -92,6 +100,8 @@ function selectLocation(id) {
         isSubmittedReport: true
     } : null);
     if (!selectedLocation) return;
+    cleanMapOverviewPending = false;
+    cleanMapOverviewActive = false;
 
     const coords = selectedLocation.isSubmittedReport && Number.isFinite(selectedLocation.lat) && Number.isFinite(selectedLocation.lng)
         ? [selectedLocation.lat, selectedLocation.lng]
@@ -128,12 +138,7 @@ function selectLocation(id) {
             </div>
             <div>
                 <span>Pollution level</span>
-                <strong>${escapeHTML(l.level)} · ${
-                    l.severity === 'severe' ? 'Very high' :
-                    l.severity === 'high' ? 'Unhealthy' :
-                    l.severity === 'moderate' ? 'Needs attention' :
-                    'Good / clean'
-                }</strong>
+                <strong>${escapeHTML(l.level)} · ${escapeHTML(CLEANMAP_GUIDES.severities[safeSeverity(l.severity)].summary)}</strong>
             </div>
             <div>
                 <span>Details</span>
@@ -203,12 +208,14 @@ function toggleFavorite() {
     updateProfile();
 }
 
-function searchLocation() {
+let mapSearchRequest = 0;
+async function searchLocation() {
     const input = $('searchInput');
     if (!input) return;
 
     const query = input.value.trim().toLowerCase();
 
+    const requestId = ++mapSearchRequest;
     if (!query) {
         showToast('Enter a location to search.');
         return;
@@ -220,7 +227,29 @@ function searchLocation() {
     );
 
     if (!found) {
-        showToast('That place is not in this prototype map yet.');
+        const submittedReport = reports.find(report => String(report.location).toLowerCase().includes(query));
+        if (submittedReport) {
+            switchPage('map');
+            selectLocation(submittedReport.id);
+            return;
+        }
+        showToast('Searching for that place…');
+        try {
+            const response = await fetch(`https://api.maptiler.com/geocoding/${encodeURIComponent(query)}.json?key=${MAPTILER_KEY}&limit=1&country=ph&proximity=123.6833,10.3493`);
+            if (!response.ok) throw new Error('Location search is unavailable. Please try again.');
+            const data = await response.json();
+            if (requestId !== mapSearchRequest || input.value.trim().toLowerCase() !== query) return;
+            const place = data.features?.[0];
+            if (!place?.center || !place.center.every(Number.isFinite)) {
+                showToast('No matching place found. Try a more specific location.');
+                return;
+            }
+            switchPage('map');
+            if (cleanMapInstance) cleanMapInstance.setView([place.center[1], place.center[0]], 14);
+            showToast(place.place_name || place.text || 'Location found.');
+        } catch (error) {
+            if (requestId === mapSearchRequest) showToast(error.message || 'Location search is unavailable. Please try again.');
+        }
         return;
     }
 
@@ -312,10 +341,40 @@ if ($('zoomOut')) {
     });
 }
 
+// Fit only once the map has real dimensions. A hidden welcome screen/tab has none.
+// Keep fitting on dimension changes until a user or location action changes the view.
+function scheduleMapLayout() {
+    cancelAnimationFrame(cleanMapLayoutFrame);
+    cleanMapLayoutFrame = requestAnimationFrame(() => {
+        const host = $('realMap');
+        if (!host || !host.clientWidth || !host.clientHeight) return;
+        if (!cleanMapInstance) {
+            initRealMap();
+            return;
+        }
+        const size = [host.clientWidth, host.clientHeight];
+        const changed = !cleanMapLastSize || size.some((value, i) => value !== cleanMapLastSize[i]);
+        cleanMapLayoutUpdating = true;
+        try {
+            cleanMapInstance.invalidateSize({ animate: false, pan: true, debounceMoveend: true });
+            if (cleanMapOverviewPending || (cleanMapOverviewActive && changed)) {
+                cleanMapInstance.fitBounds(CEBU_ISLAND_BOUNDS, {
+                    padding: [Math.min(32, Math.round(size[0] * 0.05)), 24],
+                    animate: false
+                });
+                cleanMapOverviewPending = false;
+            }
+            cleanMapLastSize = size;
+        } finally {
+            cleanMapLayoutUpdating = false;
+        }
+    });
+}
+
 // Initialize the real interactive map
 function initRealMap() {
     const host = $('realMap');
-    if (!host) return;
+    if (!host || !host.clientWidth || !host.clientHeight) return;
 
     if (!window.L) {
         host.innerHTML = `
@@ -328,14 +387,21 @@ function initRealMap() {
     }
 
     if (cleanMapInstance) {
-        cleanMapInstance.invalidateSize();
+        scheduleMapLayout();
         return;
     }
 
     cleanMapInstance = L.map(host, {
         zoomControl: false,
-        scrollWheelZoom: true
-    }).setView([10.3157, 123.8854], 12);
+        scrollWheelZoom: true,
+        zoomSnap: 0.25
+    });
+    cleanMapInstance.on('movestart zoomstart', () => {
+        if (!cleanMapLayoutUpdating) {
+            cleanMapOverviewPending = false;
+            cleanMapOverviewActive = false;
+        }
+    });
 
     // MAPTILER TILE LAYER
     // Uses your MapTiler API key.
@@ -355,18 +421,11 @@ function initRealMap() {
     locations.forEach(location => {
         const coords = mapCoordinates[location.id] || [10.3157, 123.8854];
 
-        const colors = {
-            low: '#35d68a',
-            moderate: '#f6d54a',
-            high: '#ff8b3d',
-            severe: '#ff4f69'
-        };
-
         const marker = L.circleMarker(coords, {
             radius: 9,
             color: '#ffffff',
             weight: 2,
-            fillColor: colors[location.severity] || colors.moderate,
+            fillColor: severityColor(location.severity),
             fillOpacity: 1
         }).addTo(cleanMapInstance);
 
@@ -380,9 +439,7 @@ function initRealMap() {
     });
     renderReportMarkers();
 
-    setTimeout(() => {
-        if (cleanMapInstance) cleanMapInstance.invalidateSize();
-    }, 250);
+    scheduleMapLayout();
 }
 
 // Navigation
@@ -405,9 +462,7 @@ function switchPage(page) {
 
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
-    if (page === 'map' && cleanMapInstance) {
-        setTimeout(() => cleanMapInstance.invalidateSize(), 150);
-    }
+    if (page === 'map') scheduleMapLayout();
 }
 
 document.querySelectorAll('.nav-item').forEach(button => {
@@ -1001,10 +1056,9 @@ if ($('pickerUseGps')) $('pickerUseGps').addEventListener('click', requestReport
 function addReportMarker(report) {
     if (!cleanMapInstance || !Number.isFinite(report.lat) || !Number.isFinite(report.lng)) return;
     if (reportMarkers[report.id]) reportMarkers[report.id].remove();
-    const colors = { low: '#35d68a', moderate: '#f6d54a', high: '#ff8b3d', severe: '#ff4f69' };
     const marker = L.circleMarker([report.lat, report.lng], {
         radius: 10, color: '#ffffff', weight: 2,
-        fillColor: colors[safeSeverity(report.severity)], fillOpacity: 1
+        fillColor: severityColor(report.severity), fillOpacity: 1
     }).addTo(cleanMapInstance);
     marker.bindTooltip(report.location, { direction: 'top', offset: [0, -8] });
     marker.on('click', () => selectLocation(report.id));
@@ -1372,6 +1426,10 @@ document.querySelectorAll('[data-profile-action]').forEach(button => {
 });
 
 // Utility functions
+function severityColor(value) {
+    return getComputedStyle(document.documentElement).getPropertyValue(`--${safeSeverity(value)}`).trim();
+}
+
 function safeSeverity(value) {
     return ['low', 'moderate', 'high', 'severe'].includes(value)
         ? value
@@ -1394,6 +1452,11 @@ function escapeHTML(value) {
 
 // Start CleanMap
 renderMarkers();
+if (window.ResizeObserver && $('realMap')) {
+    const mapSizeObserver = new ResizeObserver(scheduleMapLayout);
+    mapSizeObserver.observe($('realMap'));
+}
+window.addEventListener('resize', scheduleMapLayout);
 initRealMap();
 updateStatistics();
 updateProfile();
@@ -1428,18 +1491,9 @@ function initializeCleanMapWelcome() {
         welcome.hidden = true;
         app.hidden = false;
 
-requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-        if (cleanMapInstance) {
-            cleanMapInstance.invalidateSize({
-                animate: false,
-                pan: false
-            });
-        }
-    });
-});
-};
-    
+        scheduleMapLayout();
+    };
+
 const welcomeSeen = localStorage.getItem('cleanmapWelcomeSeen');
 
 if (welcomeSeen === 'true') {
@@ -1470,7 +1524,7 @@ if (welcomeSeen === 'true') {
         }
 
         localStorage.setItem('cleanmapWelcomeSeen', 'true');
-showApp();
+        showApp();
 
         if (sessionUser) {
             if (dialog?.open) dialog.close();
