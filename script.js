@@ -248,7 +248,8 @@ async function searchLocation() {
             if (cleanMapInstance) cleanMapInstance.setView([place.center[1], place.center[0]], 14);
             showToast(place.place_name || place.text || 'Location found.');
         } catch (error) {
-            if (requestId === mapSearchRequest) showToast(error.message || 'Location search is unavailable. Please try again.');
+            console.warn('CleanMap location search failed:', error);
+            if (requestId === mapSearchRequest) showToast('Location search is unavailable. Please try again.');
         }
         return;
     }
@@ -396,6 +397,15 @@ function initRealMap() {
         scrollWheelZoom: true,
         zoomSnap: 0.25
     });
+    cleanMapLayoutUpdating = true;
+    try {
+        cleanMapInstance.fitBounds(CEBU_ISLAND_BOUNDS, {
+            padding: [Math.min(32, Math.round(host.clientWidth * 0.05)), 24],
+            animate: false
+        });
+    } finally {
+        cleanMapLayoutUpdating = false;
+    }
     cleanMapInstance.on('movestart zoomstart', () => {
         if (!cleanMapLayoutUpdating) {
             cleanMapOverviewPending = false;

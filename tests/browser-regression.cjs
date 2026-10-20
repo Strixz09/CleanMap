@@ -33,6 +33,36 @@ const settle = page => page.evaluate(() => new Promise(resolve => requestAnimati
         await page.goto(baseURL, { waitUntil: 'networkidle' });
         assert.equal(await page.evaluate(() => cleanMapInstance), null, 'Map is deferred while welcome hides it');
         assert.equal(await page.locator('[data-impact-guide] .guide-card').count(), 8);
+        // The first view must exist synchronously, before the next layout frame.
+        const initialView = await page.evaluate(() => {
+            document.getElementById('welcomeScreen').hidden = true;
+            document.getElementById('appShell').hidden = false;
+            initRealMap();
+            const view = {
+                zoom: cleanMapInstance.getZoom(),
+                contains: cleanMapInstance._loaded && cleanMapInstance.getBounds().contains(CEBU_ISLAND_BOUNDS),
+                updating: cleanMapLayoutUpdating
+            };
+            if (Number.isFinite(view.zoom) && view.contains) {
+                reports.push({ id: 'initial-selection', location: 'Regression-only initial selection', lat: 11.15, lng: 123.95, severity: 'low' });
+                selectLocation('initial-selection');
+            }
+            return view;
+        });
+        assert(Number.isFinite(initialView.zoom) && initialView.contains, 'Map has an island view immediately after initialization');
+        assert.equal(initialView.updating, false, 'Initialization releases the layout guard');
+        await page.waitForFunction(() => !cleanMapInstance._panAnim?._inProgress);
+        await settle(page);
+        const immediateSelection = await page.evaluate(() => ({
+            distance: cleanMapInstance.latLngToContainerPoint([11.15, 123.95]).distanceTo(cleanMapInstance.getSize().divideBy(2)),
+            zoom: cleanMapInstance.getZoom(), overview: cleanMapOverviewActive
+        }));
+        assert(immediateSelection.distance <= 1, 'Selection before the next layout frame retains its location');
+        assert.equal(immediateSelection.zoom, initialView.zoom);
+        assert.equal(immediateSelection.overview, false);
+        console.log('PASS synchronous map initialization and immediate report selection');
+        // Discard the in-memory fixture before exercising the normal welcome flow.
+        await page.reload({ waitUntil: 'networkidle' });
         await page.locator('#welcomeSignIn').click();
         await page.locator('#accountDialogClose').click();
         await page.waitForFunction(() => cleanMapInstance?._loaded && !cleanMapOverviewPending);
@@ -75,6 +105,24 @@ const settle = page => page.evaluate(() => new Promise(resolve => requestAnimati
         await page.waitForFunction(() => cleanMapInstance.getZoom() === 15 && !cleanMapInstance._animatingZoom);
         await page.locator('#zoomOut').click();
         await page.waitForFunction(() => cleanMapInstance.getZoom() === 14 && !cleanMapInstance._animatingZoom);
+        // Network, parse, and HTTP failures all show the same community-facing copy.
+        for (const failure of ['network', 'json', 'http']) {
+            const pattern = '**/geocoding/**';
+            await page.route(pattern, route => failure === 'network'
+                ? route.abort('failed')
+                : route.fulfill({ status: failure === 'http' ? 503 : 200, contentType: 'application/json', body: 'not JSON' }));
+            try {
+                await page.locator('#searchInput').fill(`Regression search failure ${failure}`);
+                const warningPromise = page.waitForEvent('console', { predicate: message => message.type() === 'warning' && message.text().startsWith('CleanMap location search failed:') });
+                await page.locator('#searchButton').click();
+                const warning = await warningPromise;
+                assert.equal(await warning.args()[1].evaluate(error => error.name), failure === 'network' ? 'TypeError' : failure === 'json' ? 'SyntaxError' : 'Error', 'Raw search error is logged');
+                await page.waitForFunction(() => document.getElementById('toast').textContent === 'Location search is unavailable. Please try again.');
+            } finally {
+                await page.unroute(pattern);
+            }
+        }
+        console.log('PASS controlled search failure messages and raw warning diagnostics');
         await page.locator('#locationButton').click();
         await page.waitForFunction(() => window.userLocationMarker?.getLatLng().lat === 10.3157);
         console.log('PASS live search, preserved view after tab/resize, zoom, simulated map GPS');
@@ -121,7 +169,10 @@ const settle = page => page.evaluate(() => new Promise(resolve => requestAnimati
         await page.waitForFunction(() => document.getElementById('locationPickerDialog').open && pendingPickedCoordinates?.lat === 10.3157);
         // Exercise an actual Leaflet click in the picker before confirming the pin.
         const picker = page.locator('#locationPickerMap');
+        const beforePick = await page.evaluate(() => ({ ...pendingPickedCoordinates }));
         await picker.click({ position: { x: 160, y: 160 } });
+        await page.waitForFunction(before => pendingPickedCoordinates &&
+            (pendingPickedCoordinates.lat !== before.lat || pendingPickedCoordinates.lng !== before.lng), beforePick);
         const chosen = await page.evaluate(() => ({ ...pendingPickedCoordinates }));
         await page.locator('#confirmPickedLocation').click();
         await page.waitForFunction(() => !document.getElementById('locationPickerDialog').open);
