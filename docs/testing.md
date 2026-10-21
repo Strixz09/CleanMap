@@ -19,3 +19,15 @@ For visual verification and accessibility, use the registered shared preview wit
 ## Report-details dashboard
 
 With the same CDP/module environment, run `node tests/report-details.cjs` for focused dialog coverage. It checks marker/profile-card entry, desktop/phone/tablet/landscape layout, visible voting, fixed header and internal scrolling, Escape and map preservation, keyboard focus, duplicate/replacement votes and threshold boundaries, feedback, photo and playable synthetic video, media cleanup, deletion confirmations, and owner/member/admin action visibility. Feedback's Supabase payload and sign-in/failure behavior are checked with an in-browser stub; this does not certify live RLS permissions. All test reports/media are confined to a temporary browser context. The same optional Vercel-origin resource overrides are supported.
+
+## Profiles, social-auth contracts, and Explore
+
+Run `node tests/community.cjs` with the same `CLEANMAP_BROWSER_CDP` and `CLEANMAP_PLAYWRIGHT_MODULE` environment as above. It injects `tests/fixtures/community-client.js` **only into a new isolated browser context**, blocks hosted Supabase, and closes the context afterward. It checks UI/API contracts for profiles/avatars, author links, feedback edits/deletes, pagination/geographic filters, safe rendering, email/reset/provider actions, redirects, session changes, and responsive layout. It simulates provider sessions; it does not certify an actual Google/Facebook exchange or hosted Supabase permissions.
+
+For SQL security validation, use a fresh disposable PostgreSQL 15+ database, never the real project. Run these files in order with `psql -v ON_ERROR_STOP=1`:
+
+1. `tests/security-fixture.sql` — reconstructs the schema used by this app and deliberately broad pre-existing write policies.
+2. `supabase/migrations/20261021_community.sql` — actual migration.
+3. `tests/security-regression.sql` — impersonation/ownership/privacy/uniqueness/Storage/admin assertions executed under real PostgreSQL roles.
+
+The fixture creates synthetic identities and records in that disposable database only. It is not a production schema export. Destroy/recreate the test database before repeating the three-file sequence. Production setup and remaining live validation gates are in `docs/community-setup.md`.

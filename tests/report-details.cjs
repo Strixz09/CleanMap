@@ -20,7 +20,7 @@ const settle = page => page.evaluate(() => new Promise(resolve => requestAnimati
         await context.route(`${new URL(baseURL).origin}/**`, async route => {
             const url = new URL(route.request().url());
             const file = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
-            if (['index.html', 'style.css', 'design.css', 'script.js', 'guides.js', 'welcome-screen.png'].includes(file)) {
+            if (['index.html', 'style.css', 'design.css', 'script.js', 'guides.js', 'community.js', 'community.css', 'welcome-screen.png'].includes(file)) {
                 await route.fulfill({ path: path.join(root, file), headers: { 'cache-control': 'no-store' } });
             } else await route.continue();
         });
@@ -185,7 +185,7 @@ const settle = page => page.evaluate(() => new Promise(resolve => requestAnimati
         await close();
         const feedbackContract = await page.evaluate(async () => {
             selectLocation(reports[0].id);
-            const originalClient = supabaseClient, originalLoad = loadCloudReports;
+            const originalClient = supabaseClient, originalOpen = openCloudReport;
             const calls = [];
             let rejectInsert = false;
             try {
@@ -193,7 +193,7 @@ const settle = page => page.evaluate(() => new Promise(resolve => requestAnimati
                     calls.push({ table, payload });
                     return { error: rejectInsert ? new Error('Synthetic provider failure') : null };
                 } }) };
-                loadCloudReports = async () => {};
+                openCloudReport = async () => {};
                 currentUser = null;
                 await voteOnReport(reports[0].id, 'high');
                 const voteAuth = document.getElementById('reportDetailsStatus').textContent;
@@ -213,7 +213,7 @@ const settle = page => page.evaluate(() => new Promise(resolve => requestAnimati
                 await submitCommunityNote(reports[0].id, input.value);
                 return { calls, blocked, invalid, voteAuth, noteAuth, success,
                     failure: document.getElementById('reportDetailsStatus').textContent, draft: input.value };
-            } finally { supabaseClient = originalClient; loadCloudReports = originalLoad; }
+            } finally { supabaseClient = originalClient; openCloudReport = originalOpen; }
         });
         assert.equal(feedbackContract.blocked, 0);
         assert.equal(feedbackContract.invalid, 0);

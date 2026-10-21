@@ -24,7 +24,7 @@ const settle = page => page.evaluate(() => new Promise(resolve => requestAnimati
         await context.route(`${origin}/**`, async route => {
             const url = new URL(route.request().url());
             const file = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
-            if (['index.html', 'style.css', 'design.css', 'script.js', 'guides.js', 'welcome-screen.png'].includes(file)) {
+            if (['index.html', 'style.css', 'design.css', 'script.js', 'guides.js', 'community.js', 'community.css', 'welcome-screen.png'].includes(file)) {
                 await route.fulfill({ path: path.join(root, file), headers: { 'cache-control': 'no-store' } });
             } else await route.continue();
         });
