@@ -18,7 +18,7 @@ The existing HTML/CSS/vanilla JavaScript application now has editable public pro
 ## 1. Audit before applying the migration
 
 1. Back up the database through Supabase's backup tools. Confirm the target project ID above.
-2. Run `supabase/audit.sql` in the Supabase SQL Editor. It only returns schema/security metadata and bucket settings; it does not return account or report records. Review/export all result sets.
+2. Run `supabase/audit.sql` in the Supabase SQL Editor. It returns one JSON cell containing schema/security metadata, without account or report records. Review/export that cell; the commented bucket-settings query can be run separately. For missing views/RPCs, follow `docs/database-contract.md` before applying SQL. A compatible live repair requires inspecting this actual schema result.
 3. Confirm the existing columns used by the app:
    - `profiles`: UUID `id`, server-managed `role`; possibly other private fields.
    - `reports`: `id`, `reporter_id`, `location`, `pollution_type`, `severity`, `description`, `latitude`, `longitude`, `photo_url`, `video_url`, `created_at`, `verification_status`.
