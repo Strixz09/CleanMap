@@ -35,3 +35,9 @@ The fixture creates synthetic identities and records in that disposable database
 ## Email confirmation and rate limits
 
 Run `node tests/auth-confirmation.cjs` with the same CDP/module environment. It uses the official CDN Supabase v2 client and intercepts all Supabase requests in isolated browser contexts. It verifies the exact production `redirect_to`, single in-flight signup and loading/reset behavior, 429 handling without retry, existing/unconfirmed-account sign-in, PKCE callback exchange/session persistence, expired/error links, missing verifier guidance and password recovery. Production-origin candidate assets are intercepted from this checkout, so this does **not** prove deployment, email delivery, live credentials, or Dashboard configuration. No real signup/email/record is created.
+
+## Missing community API repair
+
+Run `python3 tests/community-api-migration.py` from the repository root with the disposable `cleanmap-security-db` container running on the task-local Docker Unix socket. Options `--docker-host unix:///path/to/docker.sock --container <disposable-container> --port 5433` select another local fixture container. This runner **drops and recreates only `cleanmap_api_repair_test`**; never point it at a valuable database/container. It uses Python, Docker and PostgreSQL, with no additional application dependency.
+
+The runner models prepared base tables with the six API objects missing, applies `2026102101_restore_community_api.sql`, checks its exact JavaScript contract and idempotence, compares data/security/Storage snapshots, runs the existing security assertions plus `community-api-regression.sql`, and checks transactional failure cases and native enum severity. All identities/media/records are synthetic and local. This does not certify compatibility with the missing live audit; manual gates and live acceptance checks are in [community-api-repair.md](community-api-repair.md).

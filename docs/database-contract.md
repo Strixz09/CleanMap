@@ -14,6 +14,8 @@ Read-only API probes on 2026-10-21 against `https://zezcbpmmhpwzlbuafsby.supabas
 
 The existing table responses show that `public` is recognized by the API. They do not disclose actual column definitions, grant permission to read records, or prove the community views are absent from PostgreSQL itself. The user's missing-RPC errors are consistent with the same deployment mismatch. The audit below is needed to distinguish an unapplied/rolled-back migration from an object/signature/exposure/cache problem. Do not provide a secret API key to the browser or relax RLS to obtain this information.
 
+The owner subsequently confirmed all six API objects are absent. A narrow, locally tested repair draft and manual deployment checklist are in [community-api-repair.md](community-api-repair.md). Full live schema/policy comparison is still pending; the absence summary alone does not establish migration compatibility.
+
 ## Obtain the actual schema
 
 In Supabase project **`zezcbpmmhpwzlbuafsby`**, run the whole updated `supabase/audit.sql` in SQL Editor as the project owner. It returns one `cleanmap_schema_audit` JSON cell. Export that cell, review function bodies for any embedded secrets, and provide the schema result plus any error from a previous migration attempt. No user/report/media rows are queried. The commented final query separately reports settings for the two relevant Storage buckets if needed.

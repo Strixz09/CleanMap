@@ -1,5 +1,7 @@
 # CleanMap community features: deployment and security setup
 
+> **Missing API objects on an existing project:** use the guarded repair and audit gates in [community-api-repair.md](community-api-repair.md). The original rollout below changes base policies/schema and must not be rerun blindly. The repair draft preserves those settings and still awaits the full live audit.
+
 ## What is implemented
 
 The existing HTML/CSS/vanilla JavaScript application now has editable public profiles, avatar previews/uploads/removal, Google/Facebook sign-in buttons, email password recovery, author links, owner/admin feedback controls, and a paginated Explore directory. The existing report dialog, map, uploads, voting thresholds, and local-report path are retained. No frontend framework, Node server, or production fixture records are added. Node is used only by the existing browser-test tooling.
@@ -25,7 +27,7 @@ The existing HTML/CSS/vanilla JavaScript application now has editable public pro
    - `feedback`: `id`, `report_id`, `user_id`, `message`, `created_at`.
    - `report_votes`: `id`, `report_id`, `user_id`, `severity`.
 4. Verify `public.is_admin()` derives its result from a trusted database role, uses a fixed safe search path, and cannot be changed by ordinary users. Check all existing SECURITY DEFINER functions and auth-user triggers for unrestricted role/profile writes. Client metadata must never assign an admin role. The migration does not replace the existing admin authority.
-5. Check existing owner/admin write policies and read visibility. In particular, feedback editing/deletion will be available only if the existing permissive policies and grants authorize it. New restrictive policies constrain those permissions; they do not expand them. Keep confidential/general feedback restricted.
+5. Check existing owner/admin write policies and read visibility. In particular, feedback editing/deletion will be available only if the existing permissive policies and grants authorize it. New restrictive policies constrain those permissions; they do not expand them. Report-attached feedback is intentionally readable by all authenticated users; retain that visibility and restrict submission to the caller's identity.
 6. Inspect `profiles` dependencies, column grants, and auth triggers. The migration revokes client access to the full private table and permits authenticated clients to read only their own `id,role`. Public fields move behind an explicit view. Ensure no other application depends on fetching private profile fields directly.
 7. Resolve existing case-insensitive username collisions, invalid existing public-field lengths/formats, or duplicate `(report_id,user_id)` votes **without inventing ownership or discarding records**. If they exist, the migration fails atomically; review them manually first.
 8. Inspect legacy report-media policies. Signed URLs retain existing access restrictions. Do not make `cleanmap-media` public to fix a missing thumbnail.
