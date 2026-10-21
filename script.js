@@ -1943,8 +1943,10 @@ function initializeCleanMapAccountUI() {
     const dialog=$('accountDialog'),form=$('accountForm'),status=$('accountStatus');
     const password=$('accountPassword'),email=$('accountEmail'),name=$('accountDisplayName');
     const submit=$('accountSubmit'),signOut=$('accountSignOut'),modeSwitch=$('accountModeSwitch');
-    let refreshVersion=0,lastUserId=null,recovering=false;
-    const setStatus=message=>{status.textContent=message;};
+    let refreshVersion=0,lastUserId=null,recovering=false,callbackNotice='';
+    const setStatus=message=>{status.textContent=callbackNotice || message;};
+    const submitLabels={signup:'Create account',reset:'Send reset link',recovery:'Update password',signin:'Sign in'};
+    const updateSubmitLabel=()=>{submit.textContent=submit.hasAttribute('aria-busy')?'Please wait…':submitLabels[cleanMapAccountMode];};
     function setMode(mode) {
         cleanMapAccountMode=mode;
         const signup=mode==='signup',reset=mode==='reset',recovery=mode==='recovery';
@@ -1953,7 +1955,7 @@ function initializeCleanMapAccountUI() {
         email.closest('.account-field').hidden=recovery; email.required=!recovery;
         password.closest('.account-field').hidden=reset; password.required=!reset;
         password.autocomplete=signup||recovery?'new-password':'current-password';
-        submit.textContent=signup?'Create account':reset?'Send reset link':recovery?'Update password':'Sign in';
+        updateSubmitLabel();
         modeSwitch.textContent=signup||reset?'Already have an account? Sign in':'Need an account? Create one';
         modeSwitch.hidden=Boolean(currentUser)||recovery;
         form.hidden=Boolean(currentUser)&&!recovery;
@@ -1995,13 +1997,14 @@ function initializeCleanMapAccountUI() {
             }
         }
     }
-    $('accountButton').addEventListener('click',()=>{setMode(recovering?'recovery':cleanMapAccountMode); if(!dialog.open) dialog.showModal(); refresh();});
+    $('accountButton').addEventListener('click',()=>{callbackNotice='';setMode(recovering?'recovery':cleanMapAccountMode); if(!dialog.open) dialog.showModal(); refresh();});
     $('accountDialogClose').addEventListener('click',()=>dialog.close());
-    modeSwitch.addEventListener('click',()=>setMode(cleanMapAccountMode==='signin'?'signup':'signin'));
-    $('accountReset').addEventListener('click',()=>setMode('reset'));
+    dialog.addEventListener('close',()=>{callbackNotice='';});
+    modeSwitch.addEventListener('click',()=>{if(!cleanMapAuthBusy) {callbackNotice='';setMode(cleanMapAccountMode==='signin'?'signup':'signin');}});
+    $('accountReset').addEventListener('click',()=>{if(!cleanMapAuthBusy) {callbackNotice='';setMode('reset');}});
     document.querySelectorAll('[data-oauth-provider]').forEach(button=>button.addEventListener('click',async()=>{
         if(!supabaseClient || cleanMapAuthBusy) return;
-        cleanMapAuthBusy=true; button.disabled=true;
+        callbackNotice='';cleanMapAuthBusy=true; button.disabled=true;
         try {
             const redirectTo=authRedirectURL();
             const active=document.querySelector('.page.active')?.id.replace('page-','') || 'profile';
@@ -2021,32 +2024,47 @@ function initializeCleanMapAccountUI() {
     }));
     form.addEventListener('submit',async event=>{
         event.preventDefault(); if(cleanMapAuthBusy || !supabaseClient) return;
-        cleanMapAuthBusy=true;submit.disabled=true;
+        const requestMode=cleanMapAccountMode;
+        const controls=[submit,modeSwitch,$('accountReset'),...document.querySelectorAll('[data-oauth-provider]')];
+        callbackNotice='';cleanMapAuthBusy=true;
+        controls.forEach(control=>{control.disabled=true;});
+        submit.setAttribute('aria-busy','true');updateSubmitLabel();
         try {
             let result;
-            if(cleanMapAccountMode==='reset') {
+            if(requestMode==='reset') {
                 result=await supabaseClient.auth.resetPasswordForEmail(email.value.trim(),{redirectTo:authRedirectURL(location.origin,true)});
                 if(result.error) throw result.error;
                 setStatus('If this email has an account, a password reset link will arrive shortly.');return;
             }
-            if(cleanMapAccountMode==='recovery') {
+            if(requestMode==='recovery') {
                 result=await supabaseClient.auth.updateUser({password:password.value});
                 if(result.error) throw result.error;
                 recovering=false;password.value='';setMode('signin');setStatus('Your password was updated.');return;
             }
-            if(cleanMapAccountMode==='signup') {
-                result=await supabaseClient.auth.signUp({email:email.value.trim(),password:password.value,options:{data:{display_name:name.value.trim()},emailRedirectTo:authRedirectURL()}});
+            if(requestMode==='signup') {
+                result=await supabaseClient.auth.signUp({email:email.value.trim(),password:password.value,options:{data:{display_name:name.value.trim()},emailRedirectTo:authRedirectURL(CLEANMAP_PRODUCTION_ORIGIN)}});
             } else result=await supabaseClient.auth.signInWithPassword({email:email.value.trim(),password:password.value});
             if(result.error) throw result.error;
             password.value='';
-            if(cleanMapAccountMode==='signup' && !result.data.session) {setStatus('Account created. Check your email for a confirmation link, then sign in.');return;}
+            if(requestMode==='signup' && !result.data.session) {setStatus('Check your email for a confirmation link. If you already have an account, sign in instead of signing up again.');return;}
             await refresh(); if(currentUser) dialog.close();
-        } catch(error) {console.warn('CleanMap authentication failed:',error);setStatus('Authentication could not be completed. Check your details and try again.');}
-        finally {cleanMapAuthBusy=false;submit.disabled=false;}
+        } catch(error) {
+            console.warn('CleanMap authentication failed:',error);
+            if(error.status===429 || ['over_email_send_rate_limit','over_request_rate_limit'].includes(error.code)) {
+                setStatus('Too many authentication requests. Please wait before trying again. Your account may already exist: use the confirmation email you received, or sign in if already confirmed. No automatic retry was made.');
+            } else if(error.code==='email_not_confirmed') {
+                setStatus('Confirm your email before signing in. Check your inbox and spam folder for the confirmation link.');
+            } else if(error.code==='invalid_credentials') {
+                setStatus('The email or password is incorrect. Check your details or use “Forgot your password?”.');
+            } else setStatus('Authentication could not be completed. Check your details and connection, then try again.');
+        } finally {
+            cleanMapAuthBusy=false;controls.forEach(control=>{control.disabled=false;});
+            submit.removeAttribute('aria-busy');updateSubmitLabel();
+        }
     });
     signOut.addEventListener('click',async()=>{
         if(!supabaseClient || cleanMapAuthBusy) return;
-        cleanMapAuthBusy=true;signOut.disabled=true;
+        callbackNotice='';cleanMapAuthBusy=true;signOut.disabled=true;
         try {
             const {error}=await supabaseClient.auth.signOut();if(error) throw error;
             refreshVersion++; currentUser=null;lastUserId=null;currentRole='member';recovering=false;
@@ -2058,16 +2076,30 @@ function initializeCleanMapAccountUI() {
     // Supabase callbacks must finish before issuing queries (avoid auth lock deadlocks).
     supabaseClient?.auth.onAuthStateChange((event)=>{
         if(event==='SIGNED_OUT') {currentUser=null;currentRole='member';clearCommunitySession();updateAdminAccess();}
-        if(event==='PASSWORD_RECOVERY') {recovering=true;setMode('recovery');if(!dialog.open) dialog.showModal();}
+        if(event==='PASSWORD_RECOVERY') {callbackNotice='';recovering=true;setMode('recovery');if(!dialog.open) dialog.showModal();}
         setTimeout(()=>refresh(),0);
     });
     const callbackURL=new URL(location.href),hash=new URLSearchParams(location.hash.slice(1));
-    const callbackError=callbackURL.searchParams.has('error')||hash.has('error');
-    if(callbackURL.searchParams.has('code')||callbackURL.searchParams.has('recovery')||callbackError||hash.has('access_token')) localStorage.setItem('cleanmapWelcomeSeen','true');
+    const callbackError=['error','error_code','error_description'].some(key=>callbackURL.searchParams.has(key)||hash.has(key));
+    const sessionCallback=callbackURL.searchParams.has('code')||hash.has('access_token');
+    const authCallback=sessionCallback||callbackURL.searchParams.has('recovery')||callbackError;
+    if(authCallback) localStorage.setItem('cleanmapWelcomeSeen','true');
+    // getSession waits for the v2 client's automatic URL/PKCE handling; do not exchange the code twice.
     refresh().then(()=>{
-        if(callbackError) {sessionStorage.removeItem('cleanmapOAuthPending');setStatus('Sign-in was cancelled or permission was denied. Please try again.');if(!dialog.open) dialog.showModal();}
-        if(callbackURL.searchParams.has('code')||callbackURL.searchParams.has('recovery')||callbackError||hash.has('access_token')) history.replaceState(null,'',location.pathname);
-    }).catch(error=>{console.warn('CleanMap session restore failed:',error);setStatus('Could not restore your session. Please try signing in again.');});
+        if(callbackError) {
+            sessionStorage.removeItem('cleanmapOAuthPending');
+            const code=callbackURL.searchParams.get('error_code')||hash.get('error_code');
+            const error=callbackURL.searchParams.get('error')||hash.get('error');
+            callbackNotice=code==='otp_expired'?'This confirmation or reset link has expired or already been used. Try signing in if you already confirmed your email; otherwise request a new link after waiting.':
+                error==='access_denied'&&!code?'Sign-in was cancelled or permission was denied. Please try again.':
+                'This sign-in or confirmation link could not be completed. Try signing in, or request a new link after waiting.';
+        } else if(sessionCallback&&!recovering) {
+            callbackNotice=currentUser?'You are signed in to CleanMap.':
+                'Could not sign you in from this link. Open it in the same browser where you signed up, or try signing in if your email is already confirmed.';
+        }
+        if(callbackNotice) {setStatus(callbackNotice);if(!dialog.open) dialog.showModal();}
+        if(authCallback) history.replaceState(null,'',location.pathname);
+    }).catch(error=>{console.warn('CleanMap session restore failed:',error);setStatus('Could not restore your session. Please try signing in again.');if(authCallback&&!dialog.open) dialog.showModal();});
 }
 
 initializeCleanMapSupabase();

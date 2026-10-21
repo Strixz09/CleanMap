@@ -31,3 +31,7 @@ For SQL security validation, use a fresh disposable PostgreSQL 15+ database, nev
 3. `tests/security-regression.sql` — impersonation/ownership/privacy/uniqueness/Storage/admin assertions executed under real PostgreSQL roles.
 
 The fixture creates synthetic identities and records in that disposable database only. It is not a production schema export. Destroy/recreate the test database before repeating the three-file sequence. Production setup and remaining live validation gates are in `docs/community-setup.md`.
+
+## Email confirmation and rate limits
+
+Run `node tests/auth-confirmation.cjs` with the same CDP/module environment. It uses the official CDN Supabase v2 client and intercepts all Supabase requests in isolated browser contexts. It verifies the exact production `redirect_to`, single in-flight signup and loading/reset behavior, 429 handling without retry, existing/unconfirmed-account sign-in, PKCE callback exchange/session persistence, expired/error links, missing verifier guidance and password recovery. Production-origin candidate assets are intercepted from this checkout, so this does **not** prove deployment, email delivery, live credentials, or Dashboard configuration. No real signup/email/record is created.

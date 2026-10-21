@@ -29,6 +29,7 @@ const {chromium}=require(process.env.CLEANMAP_PLAYWRIGHT_MODULE || 'playwright-c
   await page.locator('#accountModeSwitch').click();await page.locator('#accountModeSwitch').click();
   await page.locator('#accountDisplayName').fill('Registration fixture');await page.locator('#accountPassword').fill('Test-only-password');await page.locator('#accountSubmit').click();
   await page.waitForFunction(()=>document.getElementById('accountStatus').textContent.includes('Check your email'));
+  assert.equal(await page.evaluate(()=>communityFixture.calls.find(c=>c.signup).signup.options.emailRedirectTo),'https://cleanmap-chi.vercel.app/');
   await page.locator('#accountModeSwitch').click();await page.locator('#accountPassword').fill('Test-only-password');await page.locator('#accountSubmit').click();
   await page.waitForFunction(()=>currentUser && !document.getElementById('accountDialog').open && document.querySelectorAll('#exploreResults .explore-card').length===12);
   console.log('PASS email login/registration/reset contracts, provider actions/failure states, PKCE and redirect allowlist');

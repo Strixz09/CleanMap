@@ -65,6 +65,21 @@ In Supabase → Authentication → URL Configuration:
 4. Production and local auth use PKCE with session persistence and the official existing Supabase browser client. Callbacks are processed at `/`; error/code parameters are removed after session handling. Only known local page names are restored. Arbitrary `next` URLs are not followed.
 5. Preview domains are intentionally absent from `authRedirectURL()` in `community.js`. To test OAuth on a specific trusted Vercel preview, explicitly add that exact origin to the code allowlist and the matching exact redirect URLs in Supabase. Do not use a wildcard covering untrusted deployments.
 
+### Email confirmation redirects and existing unconfirmed accounts
+
+The signup handler always sends `emailRedirectTo: 'https://cleanmap-chi.vercel.app/'`, including when signup starts locally. OAuth and password-reset redirects retain the existing trusted local/production allowlist. Supabase's official v2 client automatically processes returned sessions and PKCE codes; the page must not exchange the same code a second time.
+
+For the deployment owner:
+
+1. In Vercel, restore the intended production deployment and attach **`cleanmap-chi.vercel.app`** to it. The supplied production URL returned HTTP 404 during this task; changing a redirect cannot repair a missing deployment. Verify `/` and `script.js` return HTTP 200 before testing another confirmation email.
+2. In the Supabase project **`zezcbpmmhpwzlbuafsby`**, open **Authentication → URL Configuration**. Set **Site URL** to **`https://cleanmap-chi.vercel.app/`**. Add that exact URL to **Redirect URLs**, retaining the password-reset/local entries above if used. An unallowlisted requested redirect may fall back to the Site URL. Review obsolete preview URLs; the Site URL must not point to a deleted Vercel deployment. These Dashboard settings cannot be verified or changed through the frontend client.
+3. In **Authentication → Email Templates → Confirm signup**, inspect the confirmation link. Use Supabase's generated **`{{ .ConfirmationURL }}`** for this standard flow. Remove any hardcoded obsolete deployment link. Do not replace it with a plain site link or `{{ .RedirectTo }}` alone: that would skip token verification. Do not change recovery/provider templates unnecessarily.
+4. In **Authentication → Users**, check the existing account's confirmation state. Do not delete it or repeatedly sign it up. If already confirmed, sign in normally. Otherwise use an unexpired confirmation email, or resend once using the available Dashboard action after the rate limit has cleared. Previously sent links can retain their old redirect destination; changing code/settings does not rewrite them. Obtain a fresh link after correcting configuration. Delivery limits depend on Supabase's Auth/SMTP settings; do not hammer retries or disable confirmation to work around them.
+5. For PKCE, start signup on the production website and open its email link in the **same browser and browser profile**, which stores the verifier. A signup started on localhost returns to production but cannot transfer localhost's verifier to that origin. Confirmation can verify the email without establishing a browser session; the page then offers sign-in guidance rather than claiming success. Users opening links on another device may also need to sign in after confirmation.
+6. Test with an authorized new account: one signup, correct generated link destination, email confirmation, restored session or ordinary sign-in, sign-out, and existing-account sign-in. Test an expired link and the clear 429 message without sending repeated real requests. Do not claim email delivery or production authentication passed on the basis of isolated browser tests.
+
+No database migration, RLS change, Storage change, or private credential is required for this redirect fix.
+
 ## 4. Google sign-in
 
 1. Open Google Cloud Console and select/create the project that owns CleanMap's OAuth integration.
