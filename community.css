@@ -1,0 +1,73 @@
+/* Community identities and directory, extending CleanMap's navy/green palette. */
+.community-page { max-width: 1180px; margin: auto; }
+.member-hero { display: flex; gap: 28px; align-items: flex-start; }
+.member-intro { flex: 1; min-width: 0; }
+.member-intro h2 { font-family: Manrope, sans-serif; font-size: clamp(24px,4vw,34px); margin: 6px 0; overflow-wrap: anywhere; }
+.member-intro p { line-height: 1.7; }
+.member-username { color: var(--green); margin: 0; }
+.member-bio { white-space: pre-wrap; overflow-wrap: anywhere; }
+.member-avatar { display: inline-grid; place-items: center; width: 38px; height: 38px; border-radius: 50%; overflow: hidden; background: var(--surface2); border: 1px solid var(--line); color: var(--green); flex: none; }
+.member-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.member-avatar svg { width: 65%; height: 65%; }
+.member-avatar-large { width: 100px; height: 100px; }
+.member-counts { display: flex; gap: 40px; border-top: 1px solid var(--line); margin-top: 24px; padding-top: 24px; }
+.member-counts strong { display: block; color: var(--green); font-size: 26px; }
+.member-counts span { font-size: 13px; color: var(--muted); }
+.report-author { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; margin: 12px 0; }
+.report-author small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
+.author-link { display: inline-flex; align-items: center; gap: 10px; padding: 0; background: transparent; border: 0; text-align: left; color: var(--text); min-height: 44px; overflow-wrap: anywhere; }
+.author-link:hover { color: var(--green); }
+.member-feedback-item { border-top: 1px solid var(--line); padding: 18px 0; }
+.member-feedback-item p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.community-panel { padding: clamp(20px,4vw,32px); margin-bottom: 20px; }
+.profile-edit-dialog { width: min(640px,calc(100% - 24px)); max-height: 90dvh; overflow-y: auto; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 16px; padding: 28px; }
+.profile-edit-dialog::backdrop { background: #020814bb; }
+.profile-edit-dialog h2 { padding-right: 35px; }
+.profile-edit-dialog label, .explore-filters label { display: grid; gap: 8px; font-size: 13px; color: var(--muted); }
+.profile-edit-dialog input, .profile-edit-dialog textarea, .explore-filters input, .explore-filters select { width: 100%; min-width: 0; color: var(--text); background: var(--surface2); border: 1px solid var(--line); border-radius: 8px; padding: 12px; font: inherit; font-size: 16px; }
+.profile-edit-dialog form { display: grid; gap: 18px; }
+.profile-edit-dialog textarea { resize: vertical; min-height: 90px; }
+.avatar-edit { display: flex; align-items: center; flex-wrap: wrap; gap: 18px; }
+.form-pair { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
+.member-feedback-list { margin-top: 20px; }
+.oauth-buttons { display: grid; gap: 10px; margin: 20px 0; }
+.oauth-button { min-height: 48px; display: flex; align-items: center; justify-content: center; gap: 12px; background: var(--surface2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; }
+.oauth-button svg { width: 22px; height: 22px; }
+.oauth-button:hover { border-color: var(--green); }
+.auth-divider { text-align: center; color: var(--muted); font-size: 12px; }
+.account-reset { display: block; border: 0; background: transparent; color: var(--green); padding: 12px 0; min-height: 44px; }
+.explore-filters { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 18px; padding: 24px; }
+.explore-search { grid-column: 1 / -1; }
+.explore-results { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 20px; }
+.explore-card { display: flex; flex-direction: column; min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.explore-card-body { display: flex; flex-direction: column; flex: 1; padding: 22px; gap: 8px; }
+.explore-card h3 { font-size: 18px; line-height: 1.5; margin: 6px 0; overflow-wrap: anywhere; }
+.explore-card p { color: var(--muted); font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
+.explore-description { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.explore-thumbnail { width: 100%; height: 175px; object-fit: cover; background: var(--surface2); }
+.explore-card-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: auto; padding-top: 12px; }
+.explore-card .report-author { margin: 2px 0; }
+.explore-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 15px; margin: 20px 0; }
+.explore-empty { grid-column: 1 / -1; padding: 48px 24px; text-align: center; border: 1px dashed var(--line); border-radius: 14px; color: var(--muted); }
+.explore-pagination { display: flex; align-items: center; justify-content: center; gap: 18px; margin: 28px 0; }
+.explore-pagination button, .explore-card button, .feedback-actions button { min-height: 44px; }
+.feedback-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.feedback-editor textarea { width: 100%; min-height: 90px; background: var(--surface2); color: var(--text); padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.bottom-nav { grid-template-columns: repeat(5,minmax(0,1fr)); }
+.bottom-nav:has(#adminNavButton:not([hidden])) { grid-template-columns: repeat(6,minmax(0,1fr)); }
+@media(max-width:900px) { .explore-results { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media(max-width:600px) {
+ .member-hero { flex-direction: column; gap: 16px; } .member-avatar-large { width: 80px; height: 80px; }
+ .explore-results { grid-template-columns: minmax(0,1fr); } .explore-filters { grid-template-columns: repeat(2,minmax(0,1fr)); padding: 18px; gap: 14px; }
+ .form-pair { grid-template-columns: minmax(0,1fr); } .profile-edit-dialog { padding: 22px; }
+ .bottom-nav .nav-item { padding-inline: 3px; min-width: 0; } .bottom-nav .nav-item small { font-size: 10px; }
+}
+.community-page .view-report-button, .community-page .secondary-dialog-button,
+.community-panel .secondary-dialog-button, .profile-edit-dialog .secondary-dialog-button {
+    min-height: 44px; padding: 10px 14px; border-radius: 8px;
+}
+.community-page button:disabled { opacity: .5; cursor: not-allowed; }
+.account-field input { font-size: 16px; }
+.account-field label, .account-switch, .account-signout { font-size: 13px; }
+.account-switch, .account-signout { min-height: 44px; }
+html:has(.profile-edit-dialog[open]), html:has(.account-dialog[open]) { overflow: hidden; }

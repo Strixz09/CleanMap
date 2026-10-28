@@ -14,7 +14,16 @@ let cleanMapAccountMode = 'signin';
 let cleanMapAuthBusy = false;
 
 let selectedLocation = null;
+let reportDetailsReturnFocus = null;
 let cleanMapInstance = null;
+// Main Cebu Island coastline (not Cebu province): OpenStreetMap relation 3604190.
+// Verified from Nominatim's polygon bounds on 2026-10-20; see docs/map-overview.md.
+const CEBU_ISLAND_BOUNDS = [[9.4128637, 123.2963877], [11.2857272, 124.0702215]];
+let cleanMapOverviewPending = true;
+let cleanMapOverviewActive = true;
+let cleanMapLayoutUpdating = false;
+let cleanMapLayoutFrame = null;
+let cleanMapLastSize = null;
 let leafletMarkers = {};
 let reportMarkers = {};
 let reportLocationCoords = null;
@@ -37,7 +46,7 @@ const mapCoordinates = {
     5: [10.2500, 123.9500]
 };
 
-let reports = readStore('cleanmapReports', []);
+let reports = readStore('cleanmapReports', []).filter(report => report.cloudReport !== true);
 let favorites = readStore('cleanmapFavorites', []);
 
 function readStore(key, fallback) {
@@ -51,7 +60,7 @@ function readStore(key, fallback) {
 
 function saveStore() {
     try {
-        localStorage.setItem('cleanmapReports', JSON.stringify(reports));
+        localStorage.setItem('cleanmapReports', JSON.stringify(reports.filter(report => report.cloudReport !== true)));
         localStorage.setItem('cleanmapFavorites', JSON.stringify(favorites));
     } catch (error) {
         console.error('Could not save CleanMap data:', error);
@@ -62,6 +71,8 @@ function saveStore() {
 function showToast(message) {
     if (!toast) return;
 
+    const detailsStatus = $('reportDetailsDialog')?.open && $('reportDetailsStatus');
+    if (detailsStatus) detailsStatus.textContent = message;
     toast.textContent = message;
     toast.classList.add('show');
 
@@ -82,6 +93,16 @@ function renderMarkers() {
 function canDeleteReport(report) { return !report?.cloudReport || (Boolean(currentUser) && (report.reporterId === currentUser.id || currentRole === 'admin')); }
 
 function selectLocation(id) {
+    const cached = reports.find(report => String(report.id) === String(id));
+    if (cached?.cloudReport && cached.dbId != null && !cached.detailsLoaded && supabaseClient && currentUser) { openCloudReport(cached.dbId); return; }
+    const dialog = $('reportDetailsDialog');
+    const refreshing = dialog?.open && String(selectedLocation?.id) === String(id);
+    const focused = refreshing ? document.activeElement : null;
+    const focusId = focused?.id;
+    const focusVote = focused?.dataset.voteSeverity;
+    const scrollTop = refreshing ? $('detailsCard')?.querySelector('.report-details-scroll')?.scrollTop || 0 : 0;
+    const feedbackOpen = refreshing && $('detailsCard')?.querySelector('.community-feedback')?.open;
+    const noteDraft = refreshing ? $('detailsCard')?.querySelector('[name="communityNote"]')?.value : '';
     const sampleLocation = locations.find(item => item.id === id);
     const submittedReport = reports.find(item => item.id === id);
     selectedLocation = sampleLocation || (submittedReport ? {
@@ -92,11 +113,13 @@ function selectLocation(id) {
         isSubmittedReport: true
     } : null);
     if (!selectedLocation) return;
+    cleanMapOverviewPending = false;
+    cleanMapOverviewActive = false;
 
     const coords = selectedLocation.isSubmittedReport && Number.isFinite(selectedLocation.lat) && Number.isFinite(selectedLocation.lng)
         ? [selectedLocation.lat, selectedLocation.lng]
         : mapCoordinates[id];
-    if (cleanMapInstance && coords) cleanMapInstance.panTo(coords);
+    if (!refreshing && cleanMapInstance && coords) cleanMapInstance.panTo(coords);
 
     document.querySelectorAll('.map-marker').forEach(marker => {
         marker.classList.toggle(
@@ -111,49 +134,52 @@ function selectLocation(id) {
 
     if (!detailsCard) return;
 
+    releaseDetailsMedia();
     detailsCard.innerHTML = `
-        <div class="detail-head">
-            <span class="detail-level level-${l.severity}">
-                ${escapeHTML(l.level)} pollution
-            </span>
-            <button class="text-icon" id="closeDetails"
-                aria-label="Close details">×</button>
-        </div>
-        <h2 class="detail-location">${escapeHTML(l.name)}</h2>
-        <p class="detail-updated">Updated ${escapeHTML(l.updated)}</p>
-        <div class="detail-info">
-            <div>
-                <span>Pollution type</span>
-                <strong>${escapeHTML(l.type)}</strong>
+        <header class="report-details-header">
+            <div class="report-details-heading">
+                <p class="report-details-eyebrow">Report details <span aria-hidden="true">/</span> ${escapeHTML(l.type || 'Pollution report')}</p>
+                <h2 class="detail-location" id="reportDetailsTitle" title="${escapeHTML(l.name)}">${escapeHTML(l.name)}</h2>
+                <div class="report-details-badges">
+                    <span class="detail-level level-${safeSeverity(l.severity)}">${escapeHTML(l.level)} severity</span>
+                    ${l.isSubmittedReport ? `<span class="report-status">${escapeHTML(l.verificationStatus || 'Pending verification')}</span>` : ''}
+                </div>
+                <p class="report-details-status" id="reportDetailsStatus" role="status" aria-live="polite"></p>
             </div>
-            <div>
-                <span>Pollution level</span>
-                <strong>${escapeHTML(l.level)} · ${
-                    l.severity === 'severe' ? 'Very high' :
-                    l.severity === 'high' ? 'Unhealthy' :
-                    l.severity === 'moderate' ? 'Needs attention' :
-                    'Good / clean'
-                }</strong>
+            <button type="button" class="report-details-close" id="closeDetails" aria-label="Close report details" autofocus>×</button>
+        </header>
+        <div class="report-details-scroll" id="reportDetailsScroll" tabindex="0" role="region" aria-label="Report information and community actions">
+            <div class="report-details-layout">
+                <aside class="report-details-community" aria-label="Community and report actions">
+                    ${l.isSubmittedReport ? buildVotePanel(l) : ''}
+                    ${l.isSubmittedReport ? `<section class="report-verification"><h3>Admin verification</h3><p>${escapeHTML(l.verificationStatus || 'Pending verification')}</p><small>Admin verification is separate from community severity voting.</small></section>` : ''}
+                    <section class="report-actions-section" aria-labelledby="reportActionsTitle">
+                        <h3 id="reportActionsTitle">Report actions</h3>
+                        <div class="detail-actions">
+                            ${l.isSubmittedReport ? `${canDeleteReport(l) ? '<button class="danger-button detail-delete-button" id="deleteSelectedReport" type="button">Delete report</button>' : ''}` : '<button type="button" class="save-btn" id="favoriteButton">' + (saved ? '★ Remove favorite' : '♡ Save location') + '</button>'}
+                            <button type="button" id="closeDetailsAction">Close details</button>
+                        </div>
+                    </section>
+                </aside>
+                <section class="report-details-information" aria-labelledby="reportInformationTitle">
+                    ${l.photo || l.videoUrl || l.videoKey ? `<div class="report-details-media">
+                        ${l.photo ? `<div class="submitted-report-photo"><img src="${escapeHTML(l.photo)}" alt="Photo attached to this pollution report"></div>` : ''}
+                        ${l.videoUrl ? `<div class="submitted-report-video"><video controls playsinline preload="metadata" src="${escapeHTML(l.videoUrl)}" aria-label="Video attached to this pollution report"></video></div>` : l.videoKey ? `<div class="submitted-report-video" data-video-key="${escapeHTML(l.videoKey)}"><p class="field-hint">Loading submitted video…</p></div>` : ''}
+                    </div>` : ''}
+                    <section class="report-information-section">
+                        <h3 id="reportInformationTitle">Report information</h3>
+                        ${authorMarkup(l.reporterId,l.updated)}
+                        <p class="report-description">${escapeHTML(l.description || 'No description provided.')}</p>
+                        <dl class="report-metadata">
+                            <div><dt>Location</dt><dd>${escapeHTML(l.name)}</dd></div>
+                            ${coords ? `<div><dt>Coordinates</dt><dd>${coords.map(value => Number(value).toFixed(5)).join(', ')}</dd></div>` : ''}
+                            <div><dt>${l.isSubmittedReport ? 'Date reported' : 'Last updated'}</dt><dd>${escapeHTML(l.updated || 'Date not recorded')}</dd></div>
+                            ${l.reporterId && currentUser?.id === l.reporterId ? '<div><dt>Reported by</dt><dd>You</dd></div>' : ''}
+                            <div><dt>Severity</dt><dd>${escapeHTML(l.level)} · ${escapeHTML(CLEANMAP_GUIDES.severities[safeSeverity(l.severity)].summary)}</dd></div>
+                        </dl>
+                    </section>
+                </section>
             </div>
-            <div>
-                <span>Details</span>
-                <strong>${escapeHTML(l.description)}</strong>
-            </div>
-        </div>
-        ${l.photo ? `<div class="submitted-report-photo"><img src="${l.photo}" alt="Photo attached to this pollution report"></div>` : ''}
-        ${l.videoUrl ? `<div class="submitted-report-video"><video controls preload="metadata" src="${escapeHTML(l.videoUrl)}"></video></div>` : l.videoKey ? `<div class="submitted-report-video" data-video-key="${escapeHTML(l.videoKey)}"><p class="field-hint">Loading submitted video…</p></div>` : ''}
-        ${l.isSubmittedReport ? `
-    <div class="detail-info admin-verification-info">
-        <div>
-            <span>Admin verification</span>
-            <strong>${escapeHTML(l.verificationStatus || 'Pending verification')}</strong>
-        </div>
-    </div>
-    ${buildVotePanel(l)}
-` : ''}
-        <div class="detail-actions">
-            <button id="closeDetailsAction">Close details</button>
-            ${l.isSubmittedReport ? `<span class="submitted-report-tag">Community report</span>${canDeleteReport(l) ? '<button class="danger-button detail-delete-button" id="deleteSelectedReport" type="button">Delete report</button>' : ''}` : `<button class="save-btn" id="favoriteButton">${saved ? '★ Remove favorite' : '♡ Save location'}</button>`}
         </div>
     `;
 
@@ -163,27 +189,61 @@ function selectLocation(id) {
     $('closeDetailsAction').addEventListener('click', clearDetails);
     if ($('favoriteButton')) $('favoriteButton').addEventListener('click', toggleFavorite);
     if ($('deleteSelectedReport')) $('deleteSelectedReport').addEventListener('click', () => requestDeleteReport(l.id));
+    if (dialog && !dialog.open) {
+        reportDetailsReturnFocus = document.activeElement;
+        dialog.showModal();
+    }
+    if (refreshing) {
+        const feedback = detailsCard.querySelector('.community-feedback');
+        if (feedback) feedback.open = Boolean(feedbackOpen);
+        const noteInput = detailsCard.querySelector('[name="communityNote"]');
+        if (noteInput) noteInput.value = noteDraft || '';
+        detailsCard.querySelector('.report-details-scroll').scrollTop = scrollTop;
+        const nextFocus = focusId ? $(focusId) : [...detailsCard.querySelectorAll('[data-vote-severity]')].find(button => button.dataset.voteSeverity === focusVote);
+        nextFocus?.focus({ preventScroll: true });
+    }
+}
+
+function releaseDetailsMedia() {
+    $('detailsCard')?.querySelectorAll('video').forEach(video => {
+        video.pause();
+        if (video.dataset.localObjectUrl) URL.revokeObjectURL(video.dataset.localObjectUrl);
+    });
 }
 
 function clearDetails() {
+    const dialog = $('reportDetailsDialog');
+    if (dialog?.open) dialog.close();
     selectedLocation = null;
-
-    document.querySelectorAll('.map-marker').forEach(marker => {
-        marker.classList.remove('selected');
-    });
-
-    if ($('detailsCard')) {
-        $('detailsCard').innerHTML = `
-            <div class="empty-details">
-                <span class="pin-icon">⌖</span>
-                <div>
-                    <strong>Select a marker</strong>
-                    <p>Tap a colored marker on the map to view details for that area.</p>
-                </div>
-            </div>
-        `;
-    }
+    document.querySelectorAll('.map-marker').forEach(marker => marker.classList.remove('selected'));
+    releaseDetailsMedia();
+    $('detailsCard')?.replaceChildren();
 }
+
+$('reportDetailsDialog')?.addEventListener('keydown', event => {
+    if (event.key !== 'Tab' || document.querySelector('#deleteReportDialog[open], #feedbackEditDialog[open], #profileEditDialog[open]')) return;
+    const dialog = event.currentTarget;
+    const controls = [...dialog.querySelectorAll('button, input, textarea, select, summary, video[controls], [tabindex]')]
+        .filter(element => !element.disabled && element.tabIndex >= 0 && element.getClientRects().length);
+    const first = controls[0], last = controls[controls.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault(); last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault(); first?.focus();
+    }
+});
+
+$('reportDetailsDialog')?.addEventListener('close', () => {
+    // Escape closes the native dialog; keep selection and media state in sync.
+    if ($('reportDetailsDialog').open) return;
+    if (selectedLocation) clearDetails();
+    if (!document.querySelector('dialog[open]')) {
+        const opener = reportDetailsReturnFocus?.isConnected && reportDetailsReturnFocus.getClientRects().length
+            ? reportDetailsReturnFocus : $('realMap');
+        opener?.focus({ preventScroll: true });
+    }
+    reportDetailsReturnFocus = null;
+});
 
 function toggleFavorite() {
     if (!selectedLocation) return;
@@ -203,12 +263,14 @@ function toggleFavorite() {
     updateProfile();
 }
 
-function searchLocation() {
+let mapSearchRequest = 0;
+async function searchLocation() {
     const input = $('searchInput');
     if (!input) return;
 
     const query = input.value.trim().toLowerCase();
 
+    const requestId = ++mapSearchRequest;
     if (!query) {
         showToast('Enter a location to search.');
         return;
@@ -220,7 +282,32 @@ function searchLocation() {
     );
 
     if (!found) {
-        showToast('That place is not in this prototype map yet.');
+        const submittedReport = reports.find(report => String(report.location).toLowerCase().includes(query));
+        if (submittedReport) {
+            switchPage('map');
+            selectLocation(submittedReport.id);
+            return;
+        }
+        showToast('Searching for that place…');
+        try {
+            const response = await fetch(`https://api.maptiler.com/geocoding/${encodeURIComponent(query)}.json?key=${MAPTILER_KEY}&limit=1&country=ph&proximity=123.6833,10.3493`);
+            if (!response.ok) throw new Error('Location search is unavailable. Please try again.');
+            const data = await response.json();
+            if (requestId !== mapSearchRequest || input.value.trim().toLowerCase() !== query) return;
+            const place = data.features?.[0];
+            if (!place?.center || !place.center.every(Number.isFinite)) {
+                showToast('No matching place found. Try a more specific location.');
+                return;
+            }
+            switchPage('map');
+            if (cleanMapInstance) cleanMapInstance.setView([place.center[1], place.center[0]], 14);
+            showToast(place.place_name || place.text || 'Location found.');
+        } catch (error) {
+            console.warn('CleanMap location search failed:', error);
+            if (requestId === mapSearchRequest && input.value.trim().toLowerCase() === query) {
+                showToast('Location search is unavailable. Please try again.');
+            }
+        }
         return;
     }
 
@@ -312,10 +399,40 @@ if ($('zoomOut')) {
     });
 }
 
+// Fit only once the map has real dimensions. A hidden welcome screen/tab has none.
+// Keep fitting on dimension changes until a user or location action changes the view.
+function scheduleMapLayout() {
+    cancelAnimationFrame(cleanMapLayoutFrame);
+    cleanMapLayoutFrame = requestAnimationFrame(() => {
+        const host = $('realMap');
+        if (!host || !host.clientWidth || !host.clientHeight) return;
+        if (!cleanMapInstance) {
+            initRealMap();
+            return;
+        }
+        const size = [host.clientWidth, host.clientHeight];
+        const changed = !cleanMapLastSize || size.some((value, i) => value !== cleanMapLastSize[i]);
+        cleanMapLayoutUpdating = true;
+        try {
+            cleanMapInstance.invalidateSize({ animate: false, pan: true, debounceMoveend: true });
+            if (cleanMapOverviewPending || (cleanMapOverviewActive && changed)) {
+                cleanMapInstance.fitBounds(CEBU_ISLAND_BOUNDS, {
+                    padding: [Math.min(32, Math.round(size[0] * 0.05)), 24],
+                    animate: false
+                });
+                cleanMapOverviewPending = false;
+            }
+            cleanMapLastSize = size;
+        } finally {
+            cleanMapLayoutUpdating = false;
+        }
+    });
+}
+
 // Initialize the real interactive map
 function initRealMap() {
     const host = $('realMap');
-    if (!host) return;
+    if (!host || !host.clientWidth || !host.clientHeight) return;
 
     if (!window.L) {
         host.innerHTML = `
@@ -328,14 +445,30 @@ function initRealMap() {
     }
 
     if (cleanMapInstance) {
-        cleanMapInstance.invalidateSize();
+        scheduleMapLayout();
         return;
     }
 
     cleanMapInstance = L.map(host, {
         zoomControl: false,
-        scrollWheelZoom: true
-    }).setView([10.3157, 123.8854], 12);
+        scrollWheelZoom: true,
+        zoomSnap: 0.25
+    });
+    cleanMapLayoutUpdating = true;
+    try {
+        cleanMapInstance.fitBounds(CEBU_ISLAND_BOUNDS, {
+            padding: [Math.min(32, Math.round(host.clientWidth * 0.05)), 24],
+            animate: false
+        });
+    } finally {
+        cleanMapLayoutUpdating = false;
+    }
+    cleanMapInstance.on('movestart zoomstart', () => {
+        if (!cleanMapLayoutUpdating) {
+            cleanMapOverviewPending = false;
+            cleanMapOverviewActive = false;
+        }
+    });
 
     // MAPTILER TILE LAYER
     // Uses your MapTiler API key.
@@ -355,18 +488,11 @@ function initRealMap() {
     locations.forEach(location => {
         const coords = mapCoordinates[location.id] || [10.3157, 123.8854];
 
-        const colors = {
-            low: '#35d68a',
-            moderate: '#f6d54a',
-            high: '#ff8b3d',
-            severe: '#ff4f69'
-        };
-
         const marker = L.circleMarker(coords, {
             radius: 9,
             color: '#ffffff',
             weight: 2,
-            fillColor: colors[location.severity] || colors.moderate,
+            fillColor: severityColor(location.severity),
             fillOpacity: 1
         }).addTo(cleanMapInstance);
 
@@ -380,9 +506,7 @@ function initRealMap() {
     });
     renderReportMarkers();
 
-    setTimeout(() => {
-        if (cleanMapInstance) cleanMapInstance.invalidateSize();
-    }, 250);
+    scheduleMapLayout();
 }
 
 // Navigation
@@ -399,15 +523,15 @@ function switchPage(page) {
         button.classList.toggle('active', button.dataset.page === page);
     });
 
+    if (page !== 'member') communityPreviousPage = page;
     if (page === 'profile') updateProfile();
+    if (page === 'explore') { loadExplore(); loadReportAreas(); }
     if (page === 'statistics') updateStatistics();
     if (page === 'admin') loadAdminDashboard();
 
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
-    if (page === 'map' && cleanMapInstance) {
-        setTimeout(() => cleanMapInstance.invalidateSize(), 150);
-    }
+    if (page === 'map') scheduleMapLayout();
 }
 
 document.querySelectorAll('.nav-item').forEach(button => {
@@ -551,6 +675,7 @@ async function hydrateVideo(container) {
         video.playsInline = true;
         video.preload = 'metadata';
         video.src = url;
+        video.dataset.localObjectUrl = url;
         video.setAttribute('aria-label', 'Community-submitted noise pollution video');
         container.replaceChildren(video);
     } catch (error) {
@@ -596,8 +721,8 @@ async function voteOnReport(reportId, severity) {
                 result = await supabaseClient.from('report_votes').insert({ report_id: report.dbId ?? report.id, user_id: currentUser.id, severity });
             }
             if (result.error) throw result.error;
-            await loadCloudReports();
-            if (selectedLocation && String(selectedLocation.id) === String(report.id)) selectLocation(report.id);
+            await openCloudReport(report.dbId ?? report.id);
+            loadCloudStatistics();
             showToast('Your vote was saved for the community.');
             return;
         } catch (error) {
@@ -649,12 +774,8 @@ function buildVotePanel(report) {
     const notesMarkup = notes.length
         ? `<div class="community-notes-list">
             <strong>Community feedback</strong>
-            ${notes.slice(-3).reverse().map(note => `
-                <blockquote>
-                    <p>${escapeHTML(note.text)}</p>
-                    <small>${escapeHTML(note.date || 'Recently submitted')}</small>
-                </blockquote>
-            `).join('')}
+            ${notes.map(note => feedbackMarkup(note,report)).join('')}
+            ${report.notesHasMore ? `<button type="button" class="view-report-button" data-more-feedback="${escapeHTML(report.id)}">Load more feedback</button>` : ''}
         </div>`
         : '<p class="field-hint">No community notes yet. Share a reason if you think the severity should be different.</p>';
 
@@ -669,7 +790,7 @@ function buildVotePanel(report) {
     return `
         <section class="community-vote-panel">
             <div class="vote-panel-heading">
-                <strong>Community severity vote</strong>
+                <h3>Community voting</h3>
                 <span class="pill ${result.verified ? 'moderate-pill' : 'low-pill'}">
                     ${communityStatus}
                 </span>
@@ -680,11 +801,9 @@ function buildVotePanel(report) {
                 ${communityDetail}
             </p>
 
-            <div class="vote-stats">${bars}</div>
-
-            <label class="field-label">
+            <p class="field-label">
                 What severity do you think this evidence shows?
-            </label>
+            </p>
 
             <div class="vote-buttons">
                 ${VOTE_LEVELS.map(level => `
@@ -702,6 +821,10 @@ function buildVotePanel(report) {
                 Sign in to submit a community vote. One vote per account per report.
             </small>
 
+            <div class="vote-stats" role="group" aria-label="Community vote counts and percentages">${bars}</div>
+
+            <details class="community-feedback">
+                <summary>Community feedback · ${notes.length} note${notes.length === 1 ? '' : 's'}</summary>
             <form class="community-note-form"
                 data-note-form
                 data-note-report="${escapeHTML(report.id)}">
@@ -718,23 +841,64 @@ function buildVotePanel(report) {
                     placeholder="For example, explain what in the photo/video supports your assessment..."
                 ></textarea>
 
-                <button type="submit" class="view-report-button">
+                <button type="submit" class="view-report-button" id="submitCommunityNote-${escapeHTML(report.id)}">
                     Submit feedback
                 </button>
             </form>
 
             ${notesMarkup}
+            </details>
         </section>
     `;
 }
 function attachVoteHandlers(container) {
     if (!container) return;
     container.querySelectorAll('[data-vote-severity]').forEach(button => button.addEventListener('click', () => voteOnReport(button.dataset.voteReport, button.dataset.voteSeverity)));
-    container.querySelectorAll('[data-note-form]').forEach(form => form.addEventListener('submit', event => {
+    container.querySelectorAll('[data-note-form]').forEach(form => form.addEventListener('submit', async event => {
         event.preventDefault();
         const input = form.elements.namedItem('communityNote');
-        submitCommunityNote(form.dataset.noteReport, input?.value);
+        const button = form.querySelector('button[type="submit"]');
+        if (button.disabled) return;
+        const hadFocus = document.activeElement === button;
+        button.disabled = true;
+        try { await submitCommunityNote(form.dataset.noteReport, input?.value); }
+        finally {
+            button.disabled = false;
+            // Disabling the submit button blurs it; the refresh may replace it too.
+            if (hadFocus && document.activeElement === document.body && $('reportDetailsDialog')?.open) {
+                $(button.id)?.focus({ preventScroll: true });
+            }
+        }
     }));
+}
+
+async function submitCommunityNote(reportId, value) {
+    const report = reports.find(item => String(item.id) === String(reportId));
+    const text = String(value || '').trim();
+    if (!report) return;
+    if (!text || text.length > 280) { showToast('Write a note of 1–280 characters before submitting.'); return; }
+    if (supabaseClient && !currentUser) { showToast('Sign in to submit community feedback.'); return; }
+    try {
+        if (supabaseClient && report.cloudReport !== false) {
+            const { error } = await supabaseClient.from('feedback').insert({
+                report_id: report.dbId ?? report.id, user_id: currentUser.id, message: text
+            });
+            if (error) throw error;
+            await openCloudReport(report.dbId ?? report.id);
+        } else {
+            report.notes = [...(report.notes || []), { text, date: new Date().toLocaleString() }];
+            saveStore();
+        }
+        if (selectedLocation && String(selectedLocation.id) === String(report.id)) {
+            const input = $('detailsCard')?.querySelector('[name="communityNote"]');
+            if (input) input.value = '';
+            selectLocation(report.id);
+        }
+        showToast('Your community feedback was saved.');
+    } catch (error) {
+        console.warn('CleanMap community feedback failed:', error);
+        showToast('Could not save your feedback. Please try again.');
+    }
 }
 
 // Compress the photo before saving it in localStorage.
@@ -1001,10 +1165,9 @@ if ($('pickerUseGps')) $('pickerUseGps').addEventListener('click', requestReport
 function addReportMarker(report) {
     if (!cleanMapInstance || !Number.isFinite(report.lat) || !Number.isFinite(report.lng)) return;
     if (reportMarkers[report.id]) reportMarkers[report.id].remove();
-    const colors = { low: '#35d68a', moderate: '#f6d54a', high: '#ff8b3d', severe: '#ff4f69' };
     const marker = L.circleMarker([report.lat, report.lng], {
         radius: 10, color: '#ffffff', weight: 2,
-        fillColor: colors[safeSeverity(report.severity)], fillOpacity: 1
+        fillColor: severityColor(report.severity), fillOpacity: 1
     }).addTo(cleanMapInstance);
     marker.bindTooltip(report.location, { direction: 'top', offset: [0, -8] });
     marker.on('click', () => selectLocation(report.id));
@@ -1065,7 +1228,8 @@ async function deleteReport(id) {
             if (reportMarkers[report.id]) { reportMarkers[report.id].remove(); delete reportMarkers[report.id]; }
             favorites = favorites.filter(favoriteId => String(favoriteId) !== String(report.id));
             saveStore(); if (selectedLocation && String(selectedLocation.id) === String(report.id)) clearDetails();
-            closeDeleteReportDialog(); updateStatistics(); updateProfile();
+            closeDeleteReportDialog(); await loadCloudStatistics(); updateProfile();
+            if ($('page-explore').classList.contains('active')) loadExplore();
             showToast('Report deleted from CleanMap.');
             return;
         } catch (error) {
@@ -1099,6 +1263,7 @@ if ($('reportForm')) {
         const locationText = String(form.get('location') || '').trim();
         if (!coords) { showToast('Choose a location suggestion, use GPS, or tap “Choose on map” before submitting.'); return; }
         if (supabaseClient && !currentUser) { showToast('Please sign in before submitting a shared report.'); return; }
+        if (String(form.get('barangay') || '').trim() && !String(form.get('city') || '').trim()) { showToast('Enter the city or municipality for this barangay, or leave both fields blank.'); return; }
         const submitButton = formElement.querySelector('[type="submit"]');
         if (submitButton) submitButton.disabled = true;
         let photo = selectedPhotoData;
@@ -1133,6 +1298,7 @@ if ($('reportForm')) {
                 const { data, error } = await supabaseClient.from('reports').insert({
                     reporter_id: currentUser.id, location: locationText, pollution_type: reportType,
                     severity: initialSeverity, description, latitude: coords.lat, longitude: coords.lng,
+                    city: String(form.get('city') || '').trim() || null, barangay: String(form.get('barangay') || '').trim() || null,
                     photo_url: photoPath, video_url: videoPath, verification_status: 'Pending verification'
                 }).select().single();
                 if (error) {
@@ -1145,7 +1311,7 @@ if ($('reportForm')) {
             } else {
                 const reportId = Date.now();
                 report = { id: reportId, location: locationText, type: reportType, severity: initialSeverity,
-                    reporterSeverity: initialSeverity, description, date: now.toLocaleString(), lat: coords?.lat, lng: coords?.lng,
+                    reporterSeverity: initialSeverity, description, date: now.toLocaleString(), city: String(form.get('city') || '').trim(), barangay: String(form.get('barangay') || '').trim(), lat: coords?.lat, lng: coords?.lng,
                     photo: photo || '', videoKey: selectedVideoFile && reportType === 'Noise Pollution' ? `cleanmap-video-${reportId}` : '',
                     votes: { low: 0, moderate: 0, high: 0, severe: 0 }, notes: [], myVote: '', verificationStatus: 'Pending verification', cloudReport: false };
                 if (report.videoKey) await saveVideoBlob(report.videoKey, selectedVideoFile);
@@ -1183,21 +1349,22 @@ if ($('reportForm')) {
 function updateStatistics() {
     const counts = { low: 0, moderate: 0, high: 0, severe: 0 };
     reports.forEach(report => { counts[safeSeverity(report.severity)] += 1; });
-    const total = reports.length;
+    if (currentUser && cloudStatistics) VOTE_LEVELS.forEach(level => { counts[level] = Number(cloudStatistics[level] || 0); });
+    const total = currentUser ? cloudStatistics?.total ?? null : reports.length;
     const uniqueLocations = [...new Set(reports
         .map(r => String(r.location || '').trim())
         .filter(Boolean))];
 
-    if ($('totalReports')) $('totalReports').textContent = total;
-    if ($('chartTotal')) $('chartTotal').textContent = total;
-    if ($('chartLow')) $('chartLow').textContent = counts.low;
-    if ($('chartModerate')) $('chartModerate').textContent = counts.moderate;
-    if ($('chartHigh')) $('chartHigh').textContent = counts.high;
-    if ($('chartSevere')) $('chartSevere').textContent = counts.severe;
+    if ($('totalReports')) $('totalReports').textContent = total ?? '—';
+    if ($('chartTotal')) $('chartTotal').textContent = total ?? '—';
+    if ($('chartLow')) $('chartLow').textContent = currentUser && !cloudStatistics ? '—' : counts.low;
+    if ($('chartModerate')) $('chartModerate').textContent = currentUser && !cloudStatistics ? '—' : counts.moderate;
+    if ($('chartHigh')) $('chartHigh').textContent = currentUser && !cloudStatistics ? '—' : counts.high;
+    if ($('chartSevere')) $('chartSevere').textContent = currentUser && !cloudStatistics ? '—' : counts.severe;
 
     const donut = document.querySelector('.donut-chart');
     if (donut) {
-        if (total === 0) {
+        if (!total) {
             donut.style.background = 'conic-gradient(var(--border, #263449) 0 100%)';
         } else {
             const lowEnd = counts.low / total * 100;
@@ -1207,7 +1374,7 @@ function updateStatistics() {
         }
     }
 
-    if ($('affectedAreas')) $('affectedAreas').textContent = uniqueLocations.length;
+    if ($('affectedAreas')) $('affectedAreas').textContent = currentUser ? cloudStatistics?.areas ?? '—' : uniqueLocations.length;
 
     const areaBars = document.querySelector('.area-bars');
     if (areaBars) {
@@ -1223,7 +1390,7 @@ function updateStatistics() {
                 .sort((a, b) => b[1] - a[1])
                 .slice(0, 5)
                 .map(([name, count]) => {
-                    const percent = Math.round(count / total * 100);
+                    const percent = Math.round(count / reports.length * 100);
                     return `<div><span>${escapeHTML(name)}</span><div class="bar-track"><i style="width:${percent}%"></i></div><b>${percent}%</b></div>`;
                 }).join('');
         }
@@ -1243,6 +1410,7 @@ function updateStatistics() {
 
 // Profile and favorites
 function updateProfile() {
+    if (communityReady && currentUser && supabaseClient) loadOwnProfile();
     if ($('favoriteCount')) $('favoriteCount').textContent = favorites.length;
     const myReports = currentUser
     ? reports.filter(report =>
@@ -1257,13 +1425,13 @@ if ($('myReportCount')) {
 }
 
     const reportList = $('myReportsList');
-    if (reportList) {
+    if (reportList && (!currentUser || !supabaseClient)) {
         if (!myReports.length) {
             reportList.innerHTML = '<p class="muted">You have not submitted any reports yet. Use Submit to add your first report.</p>';
         } else {
             reportList.innerHTML = myReports.map(report => `
                 <article class="my-report-item">
-                    ${report.photo ? `<img class="my-report-photo" src="${report.photo}" alt="Photo for report at ${escapeHTML(report.location)}">` : report.videoKey ? '<div class="my-report-photo photo-placeholder" aria-label="Video evidence attached">▶</div>' : '<div class="my-report-photo photo-placeholder" aria-label="No report photo">⌖</div>'}
+                    ${report.photo ? `<img class="my-report-photo" src="${escapeHTML(report.photo)}" alt="Photo for report at ${escapeHTML(report.location)}">` : report.videoKey ? '<div class="my-report-photo photo-placeholder" aria-label="Video evidence attached">▶</div>' : '<div class="my-report-photo photo-placeholder" aria-label="No report photo">⌖</div>'}
                     <div class="my-report-content">
                         <div class="my-report-heading"><b>${escapeHTML(report.type)}</b><span class="pill ${safeSeverity(report.severity)}-pill">${capitalize(safeSeverity(report.severity))}</span></div>
                         <p>${escapeHTML(report.location)}</p>
@@ -1344,14 +1512,12 @@ document.querySelectorAll('[data-profile-action]').forEach(button => {
             if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
            if (action === 'reports') {
     updateProfile();
-} {
-    showToast('You have not submitted any reports yet.');
 }
             return;
         }
 
         const messages = {
-            reports: `You have submitted ${myReports.length} report(s) in your account.`,
+            reports: 'Your submitted reports are listed on your profile.',
             notifications: 'There are no live notifications in this prototype.',
             settings: 'Reports and favorites are saved only in this browser. Clearing browser data may remove them.',
             help: 'CleanMap displays community-submitted reports. Map pins and statistics are empty until real reports are submitted; community reports are not a substitute for official environmental measurements.'
@@ -1372,6 +1538,10 @@ document.querySelectorAll('[data-profile-action]').forEach(button => {
 });
 
 // Utility functions
+function severityColor(value) {
+    return getComputedStyle(document.documentElement).getPropertyValue(`--${safeSeverity(value)}`).trim();
+}
+
 function safeSeverity(value) {
     return ['low', 'moderate', 'high', 'severe'].includes(value)
         ? value
@@ -1394,6 +1564,11 @@ function escapeHTML(value) {
 
 // Start CleanMap
 renderMarkers();
+if (window.ResizeObserver && $('realMap')) {
+    const mapSizeObserver = new ResizeObserver(scheduleMapLayout);
+    mapSizeObserver.observe($('realMap'));
+}
+window.addEventListener('resize', scheduleMapLayout);
 initRealMap();
 updateStatistics();
 updateProfile();
@@ -1428,18 +1603,9 @@ function initializeCleanMapWelcome() {
         welcome.hidden = true;
         app.hidden = false;
 
-requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-        if (cleanMapInstance) {
-            cleanMapInstance.invalidateSize({
-                animate: false,
-                pan: false
-            });
-        }
-    });
-});
-};
-    
+        scheduleMapLayout();
+    };
+
 const welcomeSeen = localStorage.getItem('cleanmapWelcomeSeen');
 
 if (welcomeSeen === 'true') {
@@ -1470,7 +1636,7 @@ if (welcomeSeen === 'true') {
         }
 
         localStorage.setItem('cleanmapWelcomeSeen', 'true');
-showApp();
+        showApp();
 
         if (sessionUser) {
             if (dialog?.open) dialog.close();
@@ -1514,7 +1680,8 @@ function initializeCleanMapSupabase() {
     try {
         supabaseClient = window.supabase.createClient(
             CLEANMAP_SUPABASE_URL,
-            CLEANMAP_SUPABASE_PUBLISHABLE_KEY
+            CLEANMAP_SUPABASE_PUBLISHABLE_KEY,
+            { auth: { flowType: 'pkce', detectSessionInUrl: true, persistSession: true } }
         );
     } catch (error) {
         console.error('CleanMap: Supabase client initialization failed:', error);
@@ -1545,11 +1712,12 @@ function mapCloudReport(row, voteRows = [], feedbackRows = [], userId = currentU
     });
     const report = {
         id: `cloud-${row.id}`, dbId: row.id, location: row.location, type: row.pollution_type,
+        city: row.city || '', barangay: row.barangay || '', createdAt: row.created_at,
         severity: safeSeverity(row.severity), reporterSeverity: safeSeverity(row.severity),
         description: row.description || '', date: row.created_at ? new Date(row.created_at).toLocaleString() : '',
         lat: row.latitude == null ? NaN : Number(row.latitude), lng: row.longitude == null ? NaN : Number(row.longitude),
         photoPath: cloudObjectPath(row.photo_url), videoPath: cloudObjectPath(row.video_url), photo: String(row.photo_url || '').startsWith('http') ? row.photo_url : '', videoUrl: String(row.video_url || '').startsWith('http') ? row.video_url : '',
-        votes, myVote, notes: feedbackRows.filter(f => String(f.report_id) === String(row.id)).map(f => ({ text: f.message, date: new Date(f.created_at).toLocaleString() })),
+        votes, myVote, notes: feedbackRows.filter(f => String(f.report_id) === String(row.id)).map(f => ({ id: f.id, userId: f.user_id, text: f.message, date: formatSubmittedDate(f.created_at) })),
         verificationStatus: row.verification_status || 'Pending verification', reporterId: row.reporter_id, cloudReport: true
     };
     return report;
@@ -1558,43 +1726,31 @@ function mapCloudReport(row, voteRows = [], feedbackRows = [], userId = currentU
 async function loadCloudReports() {
     if (!supabaseClient || !currentUser || cleanMapCloudLoading) return;
     cleanMapCloudLoading = true;
+    const generation = communityAuthGeneration;
     try {
-        const [reportResult, voteResult, feedbackResult] = await Promise.all([
-            supabaseClient.from('reports').select('*').order('created_at', { ascending: false }),
-            supabaseClient.from('report_votes').select('id,report_id,user_id,severity'),
-            supabaseClient.from('feedback').select('id,report_id,user_id,message,created_at').not('report_id', 'is', null).order('created_at', { ascending: true })
-        ]);
-        if (reportResult.error) throw reportResult.error;
-        if (voteResult.error) throw voteResult.error;
-        if (feedbackResult.error) throw feedbackResult.error;
-        const voteRows = voteResult.data || [], feedbackRows = feedbackResult.data || [];
-        const cloudReports = await Promise.all((reportResult.data || []).map(async row => {
-            const report = mapCloudReport(row, voteRows, feedbackRows, currentUser.id);
-            const [photoUrl, videoUrl] = await Promise.all([signedMediaUrl(report.photoPath), signedMediaUrl(report.videoPath)]);
-            report.photo = photoUrl; report.videoUrl = videoUrl;
-            const voteSummary = renderVoteSummary(report);
-            if (voteSummary.verified) report.severity = voteSummary.top;
-            return report;
-        }));
-        const savedLocalReports = readStore('cleanmapReports', []).filter(r => r.cloudReport !== true);
-        reports = [...cloudReports, ...savedLocalReports];
-        saveStore();
-        renderReportMarkers(); updateStatistics(); updateProfile();
-        if (currentRole === 'admin' && $('page-admin')?.classList.contains('active')) loadAdminDashboard();
-        if (selectedLocation?.isSubmittedReport) {
-            const refreshed = reports.find(r => String(r.id) === String(selectedLocation.id));
-            if (refreshed) selectLocation(refreshed.id); else clearDetails();
-        }
+        const {data,error} = await directoryQuery().order('created_at',{ascending:false}).order('id').range(0,199);
+        if (error) throw error;
+        if (generation !== communityAuthGeneration) return;
+        mergeCloudReports((data || []).map(directoryReport));
+        renderReportMarkers(); updateProfile();
+        const result = await supabaseClient.rpc('cleanmap_report_statistics');
+        if (generation !== communityAuthGeneration) return;
+        cloudStatistics = result.error ? null : result.data;
+        updateStatistics();
+        if (result.error) showToast('Report totals are temporarily unavailable.');
+        if ($('mapReportStatus')) $('mapReportStatus').textContent = data?.length === 200 ? 'Showing the latest 200 reports. Explore to browse all reports.' : `${data?.length || 0} shared reports loaded.`;
     } catch (error) {
-        console.error('CleanMap could not load shared reports:', error);
-        showToast(error?.message || 'Could not load shared reports from Supabase.');
+        console.warn('CleanMap could not load shared reports:', error);
+        if (generation === communityAuthGeneration) showToast('Shared reports could not be loaded. Please try again.');
     } finally { cleanMapCloudLoading = false; }
 }
 
 async function refreshCleanMapRole() {
     currentRole = 'member';
     if (!supabaseClient || !currentUser) return;
-    const { data, error } = await supabaseClient.from('profiles').select('role').eq('id', currentUser.id).maybeSingle();
+    const userId = currentUser.id;
+    const { data, error } = await supabaseClient.from('profiles').select('role').eq('id', userId).maybeSingle();
+    if (currentUser?.id !== userId) return;
     if (error) console.warn('CleanMap role lookup failed:', error.message);
     if (!error && data?.role === 'admin') currentRole = 'admin';
     updateAdminAccess();
@@ -1637,7 +1793,7 @@ function renderAdminDashboard(reportRows, feedbackRows, feedbackTotal = feedback
                     ? `<a class="admin-evidence-link" href="${escapeHTML(report.videoUrl)}" target="_blank" rel="noopener noreferrer">Open video/audio evidence</a>`
                     : '';
                 return `<article class="admin-report-card" data-admin-report-card="${escapeHTML(report.id)}">
-                    <h3>${escapeHTML(report.type || 'Pollution report')} · ${escapeHTML(report.location || 'Unknown location')}</h3>
+                    ${authorMarkup(report.reporterId,report.date)}<h3>${escapeHTML(report.type || 'Pollution report')} · ${escapeHTML(report.location || 'Unknown location')}</h3>
                     <div class="admin-report-meta"><span>Severity: ${escapeHTML(capitalize(safeSeverity(report.severity)))}</span><span>Submitted: ${escapeHTML(report.date || 'Unknown date')}</span></div>
                     <p>${escapeHTML(report.description || 'No description provided.')}</p>
                     <div class="admin-report-meta"><span class="admin-status-label">Status: ${escapeHTML(currentStatus)}</span></div>
@@ -1662,7 +1818,7 @@ function renderAdminDashboard(reportRows, feedbackRows, feedbackTotal = feedback
             feedbackList.innerHTML = feedbackRows.map(item => {
                 const related = item.report_id == null ? 'General feedback' : `Report #${escapeHTML(item.report_id)}`;
                 const date = item.created_at ? new Date(item.created_at).toLocaleString() : 'Date unavailable';
-                return `<article class="admin-feedback-card"><div class="admin-feedback-meta"><span>${related}</span><span>${escapeHTML(date)}</span></div><p>${escapeHTML(item.message || '')}</p></article>`;
+                return `<article class="admin-feedback-card">${authorMarkup(item.user_id,date,'Community member')}<div class="admin-feedback-meta"><span>${related}</span><span>${escapeHTML(date)}</span></div><p>${escapeHTML(item.message || '')}</p>${item.report_id != null ? `<button type="button" class="view-report-button" data-open-cloud-report="${escapeHTML(item.report_id)}">Open report to moderate feedback</button>` : ''}</article>`;
             }).join('');
         }
     }
@@ -1670,6 +1826,7 @@ function renderAdminDashboard(reportRows, feedbackRows, feedbackTotal = feedback
 
 async function loadAdminDashboard() {
     if (!currentUser || currentRole !== 'admin' || !supabaseClient) return;
+    const adminUserId = currentUser.id, generation = communityAuthGeneration;
     const reportList = $('adminReportsList');
     const feedbackList = $('adminFeedbackList');
     if (reportList && !reports.some(report => report.cloudReport)) reportList.innerHTML = '<p class="muted">Loading reports…</p>';
@@ -1688,14 +1845,17 @@ async function loadAdminDashboard() {
         const voteRows = voteResult.data || [];
         const feedbackRows = feedbackResult.data || [];
         const dashboardReports = await Promise.all(cloudRows.map(async row => {
-            const report = mapCloudReport(row, voteRows, feedbackRows, currentUser.id);
+            const report = mapCloudReport(row, voteRows, feedbackRows, adminUserId);
             const [photoUrl, videoUrl] = await Promise.all([signedMediaUrl(report.photoPath), signedMediaUrl(report.videoPath)]);
             report.photo = photoUrl;
             report.videoUrl = videoUrl;
             return report;
         }));
+        await fetchPublicProfiles([...cloudRows.map(row => row.reporter_id), ...feedbackRows.map(row => row.user_id)]);
+        if (generation !== communityAuthGeneration || currentUser?.id !== adminUserId || currentRole !== 'admin') return;
         renderAdminDashboard(dashboardReports, feedbackRows, feedbackCountResult.count ?? feedbackRows.length);
     } catch (error) {
+        if (generation !== communityAuthGeneration || currentUser?.id !== adminUserId) return;
         console.error('CleanMap admin dashboard load failed:', error);
         if (reportList) reportList.innerHTML = `<p class="admin-empty-state">Could not load reports: ${escapeHTML(error.message || 'Unknown error')}</p>`;
         if (feedbackList) feedbackList.innerHTML = `<p class="admin-empty-state">Could not load feedback: ${escapeHTML(error.message || 'Unknown error')}</p>`;
@@ -1780,181 +1940,171 @@ async function updateAdminReportStatus(reportId, button) {
 }
 
 function initializeCleanMapAccountUI() {
-    const dialog = $('accountDialog');
-    const openButton = $('accountButton');
-    const closeButton = $('accountDialogClose');
-    const form = $('accountForm');
-    const title = $('accountDialogTitle');
-    const status = $('accountStatus');
-    const nameField = $('accountDisplayNameField');
-    const nameInput = $('accountDisplayName');
-    const emailInput = $('accountEmail');
-    const passwordInput = $('accountPassword');
-    const submitButton = $('accountSubmit');
-    const modeSwitch = $('accountModeSwitch');
-    const signOutButton = $('accountSignOut');
-
-    if (!dialog || !openButton || !form || !status) {
-        console.error('CleanMap: account dialog elements are missing.');
-        return;
-    }
-
-    const setStatus = message => { status.textContent = message; };
-
+    const dialog=$('accountDialog'),form=$('accountForm'),status=$('accountStatus');
+    const password=$('accountPassword'),email=$('accountEmail'),name=$('accountDisplayName');
+    const submit=$('accountSubmit'),signOut=$('accountSignOut'),modeSwitch=$('accountModeSwitch');
+    let refreshVersion=0,lastUserId=null,recovering=false,callbackNotice='';
+    const setStatus=message=>{status.textContent=callbackNotice || message;};
+    const submitLabels={signup:'Create account',reset:'Send reset link',recovery:'Update password',signin:'Sign in'};
+    const updateSubmitLabel=()=>{submit.textContent=submit.hasAttribute('aria-busy')?'Please wait…':submitLabels[cleanMapAccountMode];};
     function setMode(mode) {
-        cleanMapAccountMode = mode;
-        const creating = mode === 'signup';
-        title.textContent = creating ? 'Create your CleanMap account' : 'CleanMap Account';
-        nameField.hidden = !creating;
-        nameInput.required = creating;
-        passwordInput.autocomplete = creating ? 'new-password' : 'current-password';
-        submitButton.textContent = creating ? 'Create account' : 'Sign in';
-        modeSwitch.textContent = creating
-            ? 'Already have an account? Sign in'
-            : 'Need an account? Create one';
-        modeSwitch.hidden = Boolean(currentUser);
-        form.hidden = Boolean(currentUser);
-        setStatus(creating
-            ? 'Use an email address you can access. You may need to confirm it by email.'
-            : 'Sign in to your CleanMap account.');
+        cleanMapAccountMode=mode;
+        const signup=mode==='signup',reset=mode==='reset',recovery=mode==='recovery';
+        $('accountDialogTitle').textContent=signup?'Create your CleanMap account':reset?'Reset your password':recovery?'Choose a new password':'CleanMap Account';
+        $('accountDisplayNameField').hidden=!signup; name.required=signup;
+        email.closest('.account-field').hidden=recovery; email.required=!recovery;
+        password.closest('.account-field').hidden=reset; password.required=!reset;
+        password.autocomplete=signup||recovery?'new-password':'current-password';
+        updateSubmitLabel();
+        modeSwitch.textContent=signup||reset?'Already have an account? Sign in':'Need an account? Create one';
+        modeSwitch.hidden=Boolean(currentUser)||recovery;
+        form.hidden=Boolean(currentUser)&&!recovery;
+        $('oauthOptions').hidden=Boolean(currentUser)||reset||recovery;
+        $('accountReset').hidden=Boolean(currentUser)||reset||recovery;
+        setStatus(signup?'Use an email address you can access. Confirm your account using the email we send.':reset?'Enter your account email to receive a reset link.':recovery?'Choose a password with at least 8 characters.':'Sign in to your CleanMap account.');
     }
-
-    async function refreshCleanMapAccountUI() {
-        if (!supabaseClient) {
-            openButton.textContent = 'Sign in';
-            setStatus('Supabase could not initialize. Check your internet connection and project configuration.');
-            return;
-        }
-        const { data, error } = await supabaseClient.auth.getSession();
-        if (error) {
-            console.error('CleanMap: session check failed:', error);
-            setStatus('Could not check your session. Please try again.');
-            return;
-        }
-
-        const previousUserId = currentUser?.id || null;
-        currentUser = data.session?.user || null;
-        if (currentUser) {
-            await refreshCleanMapRole();
-            updateAdminAccess();
-            await loadCloudReports();
-            if (currentRole === 'admin') await loadAdminDashboard();
-            openButton.textContent = 'Account';
-            signOutButton.hidden = false;
-            modeSwitch.hidden = true;
-            form.hidden = true;
-            nameField.hidden = true;
-
-            const profileName = currentUser.user_metadata?.display_name || currentUser.email || 'CleanMap User';
-            const profileHeading = document.querySelector('.profile-card h2');
-            if (profileHeading) profileHeading.textContent = profileName;
-            const profileDescription = document.querySelector('.profile-card > p');
-            if (profileDescription) profileDescription.textContent = 'Community Environment Watcher';
-            setStatus('Signed in as ' + (currentUser.email || profileName) + '.');
+    async function refresh() {
+        if(!supabaseClient) {setStatus('Account services are unavailable. Please check your connection.');return;}
+        const version=++refreshVersion;
+        const {data,error}=await supabaseClient.auth.getSession();
+        if(version!==refreshVersion) return;
+        if(error) {setStatus('Could not restore your session. Please try again.');if(!dialog.open) dialog.showModal();return;}
+        const next=data.session?.user || null;
+        if(lastUserId!==(next?.id || null)) {
+            currentUser=null; currentRole='member'; clearCommunitySession();
+            currentUser=next; lastUserId=next?.id || null;
+        } else currentUser=next;
+        $('accountButton').textContent=currentUser?'Account':'Sign in'; signOut.hidden=!currentUser;
+        if(currentUser) {
+            const id=currentUser.id;
+            await refreshCleanMapRole(); if(version!==refreshVersion || currentUser?.id!==id) return;
+            await initializeMemberProfile(); if(version!==refreshVersion || currentUser?.id!==id) return;
+            await loadCloudReports(); if(version!==refreshVersion || currentUser?.id!==id) return;
+            loadReportAreas();
+            setMode(recovering?'recovery':'signin');
+            if(!recovering) setStatus('You are signed in to CleanMap.');
+            if(sessionStorage.getItem('cleanmapOAuthPending')) {
+                const destination=sessionStorage.getItem('cleanmapOAuthReturn');
+                sessionStorage.removeItem('cleanmapOAuthPending');sessionStorage.removeItem('cleanmapOAuthReturn');
+                if(!recovering) {dialog.close(); switchPage(['map','explore','report','statistics','profile'].includes(destination)?destination:'profile');}
+            }
+            if($('page-explore').classList.contains('active')) loadExplore();
         } else {
-            if (previousUserId) { reports = readStore('cleanmapReports', []).filter(r => r.cloudReport !== true); renderReportMarkers(); updateStatistics(); updateProfile(); }
-            currentRole = 'member';
-            updateAdminAccess();
-            openButton.textContent = 'Sign in';
-            signOutButton.hidden = true;
-            form.hidden = false;
-            setMode(cleanMapAccountMode);
-            const profileHeading = document.querySelector('.profile-card h2');
-            if (profileHeading) profileHeading.textContent = 'CleanMap User';
-            const profileDescription = document.querySelector('.profile-card > p');
-            if (profileDescription) profileDescription.textContent = 'Community Environment Watcher';
+            currentRole='member'; updateAdminAccess(); setMode('signin');
+            if(sessionStorage.getItem('cleanmapOAuthPending')) {
+                sessionStorage.removeItem('cleanmapOAuthPending');
+                setStatus('Sign-in was not completed. You can try again.'); dialog.showModal();
+            }
         }
     }
-
-    openButton.addEventListener('click', async () => {
-        await refreshCleanMapAccountUI();
-        if (!dialog.open) dialog.showModal();
-    });
-    closeButton?.addEventListener('click', () => dialog.close());
-    modeSwitch.addEventListener('click', () => {
-        setMode(cleanMapAccountMode === 'signin' ? 'signup' : 'signin');
-    });
-
-    form.addEventListener('submit', async event => {
-        event.preventDefault();
-        if (cleanMapAuthBusy) return;
-        if (!supabaseClient) {
-            setStatus('Supabase is unavailable. Check the connection and reload CleanMap.');
-            return;
-        }
-        const email = emailInput.value.trim();
-        const password = passwordInput.value;
-        const displayName = nameInput.value.trim();
-        if (cleanMapAccountMode === 'signup' && !displayName) {
-            setStatus('Please enter a display name.');
-            nameInput.focus();
-            return;
-        }
-
-        cleanMapAuthBusy = true;
-        submitButton.disabled = true;
-        setStatus(cleanMapAccountMode === 'signup' ? 'Creating your account...' : 'Signing in...');
+    $('accountButton').addEventListener('click',()=>{callbackNotice='';setMode(recovering?'recovery':cleanMapAccountMode); if(!dialog.open) dialog.showModal(); refresh();});
+    $('accountDialogClose').addEventListener('click',()=>dialog.close());
+    dialog.addEventListener('close',()=>{callbackNotice='';});
+    modeSwitch.addEventListener('click',()=>{if(!cleanMapAuthBusy) {callbackNotice='';setMode(cleanMapAccountMode==='signin'?'signup':'signin');}});
+    $('accountReset').addEventListener('click',()=>{if(!cleanMapAuthBusy) {callbackNotice='';setMode('reset');}});
+    document.querySelectorAll('[data-oauth-provider]').forEach(button=>button.addEventListener('click',async()=>{
+        if(!supabaseClient || cleanMapAuthBusy) return;
+        callbackNotice='';cleanMapAuthBusy=true; button.disabled=true;
+        try {
+            const redirectTo=authRedirectURL();
+            const active=document.querySelector('.page.active')?.id.replace('page-','') || 'profile';
+            sessionStorage.setItem('cleanmapOAuthReturn',active); sessionStorage.setItem('cleanmapOAuthPending','1');
+            localStorage.setItem('cleanmapWelcomeSeen','true');
+            setStatus(`Connecting to ${button.dataset.oauthProvider==='google'?'Google':'Facebook'}…`);
+            const {data,error}=await supabaseClient.auth.signInWithOAuth({provider:button.dataset.oauthProvider,options:{redirectTo,skipBrowserRedirect:true}});
+            if(error) throw error;
+            const destination=new URL(data.url);
+            if(destination.origin!==CLEANMAP_SUPABASE_URL || destination.pathname!=='/auth/v1/authorize') throw new Error('Unexpected authentication destination');
+            location.assign(destination.href);
+        } catch(error) {
+            sessionStorage.removeItem('cleanmapOAuthPending');
+            console.warn('CleanMap social sign-in failed:',error);
+            setStatus('Social sign-in could not start. The provider may not be enabled yet. Try again or use email sign-in.');
+        } finally {cleanMapAuthBusy=false;button.disabled=false;}
+    }));
+    form.addEventListener('submit',async event=>{
+        event.preventDefault(); if(cleanMapAuthBusy || !supabaseClient) return;
+        const requestMode=cleanMapAccountMode;
+        const controls=[submit,modeSwitch,$('accountReset'),...document.querySelectorAll('[data-oauth-provider]')];
+        callbackNotice='';cleanMapAuthBusy=true;
+        controls.forEach(control=>{control.disabled=true;});
+        submit.setAttribute('aria-busy','true');updateSubmitLabel();
         try {
             let result;
-            if (cleanMapAccountMode === 'signup') {
-                result = await supabaseClient.auth.signUp({
-                    email,
-                    password,
-                    options: { data: { display_name: displayName } }
-                });
-            } else {
-                result = await supabaseClient.auth.signInWithPassword({ email, password });
+            if(requestMode==='reset') {
+                result=await supabaseClient.auth.resetPasswordForEmail(email.value.trim(),{redirectTo:authRedirectURL(location.origin,true)});
+                if(result.error) throw result.error;
+                setStatus('If this email has an account, a password reset link will arrive shortly.');return;
             }
-            if (result.error) throw result.error;
-
-            if (cleanMapAccountMode === 'signup' && !result.data.session) {
-                setStatus('Account created. Check your email for a confirmation link, then sign in.');
-                return;
+            if(requestMode==='recovery') {
+                result=await supabaseClient.auth.updateUser({password:password.value});
+                if(result.error) throw result.error;
+                recovering=false;password.value='';setMode('signin');setStatus('Your password was updated.');return;
             }
-            await refreshCleanMapAccountUI();
-            passwordInput.value = '';
-            setStatus('You are signed in.');
-            if (currentUser) dialog.close();
-        } catch (error) {
-            console.error('CleanMap authentication error:', error);
-            setStatus(error?.message || 'Authentication failed. Please try again.');
+            if(requestMode==='signup') {
+                result=await supabaseClient.auth.signUp({email:email.value.trim(),password:password.value,options:{data:{display_name:name.value.trim()},emailRedirectTo:authRedirectURL(CLEANMAP_PRODUCTION_ORIGIN)}});
+            } else result=await supabaseClient.auth.signInWithPassword({email:email.value.trim(),password:password.value});
+            if(result.error) throw result.error;
+            password.value='';
+            if(requestMode==='signup' && !result.data.session) {setStatus('Check your email for a confirmation link. If you already have an account, sign in instead of signing up again.');return;}
+            await refresh(); if(currentUser) dialog.close();
+        } catch(error) {
+            console.warn('CleanMap authentication failed:',error);
+            if(error.status===429 || ['over_email_send_rate_limit','over_request_rate_limit'].includes(error.code)) {
+                setStatus('Too many authentication requests. Please wait before trying again. Your account may already exist: use the confirmation email you received, or sign in if already confirmed. No automatic retry was made.');
+            } else if(error.code==='email_not_confirmed') {
+                setStatus('Confirm your email before signing in. Check your inbox and spam folder for the confirmation link.');
+            } else if(error.code==='invalid_credentials') {
+                setStatus('The email or password is incorrect. Check your details or use “Forgot your password?”.');
+            } else setStatus('Authentication could not be completed. Check your details and connection, then try again.');
         } finally {
-            cleanMapAuthBusy = false;
-            submitButton.disabled = false;
+            cleanMapAuthBusy=false;controls.forEach(control=>{control.disabled=false;});
+            submit.removeAttribute('aria-busy');updateSubmitLabel();
         }
     });
-
-    signOutButton.addEventListener('click', async () => {
-        if (!supabaseClient || cleanMapAuthBusy) return;
-        cleanMapAuthBusy = true;
-        signOutButton.disabled = true;
+    signOut.addEventListener('click',async()=>{
+        if(!supabaseClient || cleanMapAuthBusy) return;
+        callbackNotice='';cleanMapAuthBusy=true;signOut.disabled=true;
         try {
-            const { error } = await supabaseClient.auth.signOut();
-            if (error) throw error;
-            currentUser = null;
-            passwordInput.value = '';
-            setMode('signin');
-            await refreshCleanMapAccountUI();
-            setStatus('You have signed out.');
-        } catch (error) {
-            console.error('CleanMap sign-out error:', error);
-            setStatus(error?.message || 'Could not sign out. Please try again.');
-        } finally {
-            cleanMapAuthBusy = false;
-            signOutButton.disabled = false;
+            const {error}=await supabaseClient.auth.signOut();if(error) throw error;
+            refreshVersion++; currentUser=null;lastUserId=null;currentRole='member';recovering=false;
+            clearCommunitySession();updateAdminAccess();password.value='';setMode('signin');
+            $('accountButton').textContent='Sign in';signOut.hidden=true;setStatus('You have signed out.');
+        } catch(error) {console.warn('CleanMap sign-out failed:',error);setStatus('Could not sign out. Please try again.');}
+        finally {cleanMapAuthBusy=false;signOut.disabled=false;}
+    });
+    // Supabase callbacks must finish before issuing queries (avoid auth lock deadlocks).
+    supabaseClient?.auth.onAuthStateChange((event)=>{
+        if(event==='SIGNED_OUT') {currentUser=null;currentRole='member';clearCommunitySession();updateAdminAccess();}
+        if(event==='PASSWORD_RECOVERY') {callbackNotice='';recovering=true;setMode('recovery');if(!dialog.open) dialog.showModal();}
+        setTimeout(()=>refresh(),0);
+    });
+    const callbackURL=new URL(location.href),hash=new URLSearchParams(location.hash.slice(1));
+    const callbackError=['error','error_code','error_description'].some(key=>callbackURL.searchParams.has(key)||hash.has(key));
+    const sessionCallback=callbackURL.searchParams.has('code')||hash.has('access_token');
+    const authCallback=sessionCallback||callbackURL.searchParams.has('recovery')||callbackError;
+    if(authCallback) localStorage.setItem('cleanmapWelcomeSeen','true');
+    // getSession waits for the v2 client's automatic URL/PKCE handling; do not exchange the code twice.
+    refresh().then(()=>{
+        if(callbackError) {
+            sessionStorage.removeItem('cleanmapOAuthPending');
+            const code=callbackURL.searchParams.get('error_code')||hash.get('error_code');
+            const error=callbackURL.searchParams.get('error')||hash.get('error');
+            callbackNotice=code==='otp_expired'?'This confirmation or reset link has expired or already been used. Try signing in if you already confirmed your email; otherwise request a new link after waiting.':
+                error==='access_denied'&&!code?'Sign-in was cancelled or permission was denied. Please try again.':
+                'This sign-in or confirmation link could not be completed. Try signing in, or request a new link after waiting.';
+        } else if(sessionCallback&&!recovering) {
+            callbackNotice=currentUser?'You are signed in to CleanMap.':
+                'Could not sign you in from this link. Open it in the same browser where you signed up, or try signing in if your email is already confirmed.';
         }
-    });
-
-    // Restore session and update the button when authentication changes.
-    supabaseClient?.auth.onAuthStateChange((_event, session) => {
-        currentUser = session?.user || null;
-        // Defer UI refresh so auth event callbacks do not perform Supabase calls directly.
-        Promise.resolve().then(() => refreshCleanMapAccountUI());
-    });
-    refreshCleanMapAccountUI();
+        if(callbackNotice) {setStatus(callbackNotice);if(!dialog.open) dialog.showModal();}
+        if(authCallback) history.replaceState(null,'',location.pathname);
+    }).catch(error=>{console.warn('CleanMap session restore failed:',error);setStatus('Could not restore your session. Please try signing in again.');if(authCallback&&!dialog.open) dialog.showModal();});
 }
 
 initializeCleanMapSupabase();
+initializeCommunityUI();
+setupExploreAndAuthors();
 updateAdminAccess();
 initializeCleanMapAccountUI();
 initializeCleanMapWelcome();
